@@ -4,122 +4,117 @@ import requests
 import plotly.express as px
 
 st.set_page_config(page_title="Clasificador IA", layout="wide")
-
 st.title("🤖 Clasificador Inteligente de Gastos")
-st.markdown("""
-Este módulo utiliza el modelo **Random Forest** entrenado con tus datos históricos para clasificar automáticamente 
-los gastos que aún no tienen 'Grupo' o 'Subgrupo' asignado.
-""")
 
-# --- ESTADO DE LA SESIÓN (Para recordar datos entre clics) ---
-if 'df_pending' not in st.session_state:
-    st.session_state.df_pending = None
-if 'df_predicted' not in st.session_state:
-    st.session_state.df_predicted = None
+# API URL
+API_URL = "http://127.0.0.1:8000/api/v1/opex"
+
+# Session State
+if 'df_pending' not in st.session_state: st.session_state.df_pending = None
+if 'df_predicted' not in st.session_state: st.session_state.df_predicted = None
 
 # ==============================================================================
-# PASO 1: CARGAR PENDIENTES
+# 1. CARGAR PENDIENTES
 # ==============================================================================
-st.subheader("1. Identificar Gastos sin Clasificar")
+st.subheader("1. Cargar Gastos Sin Clasificar")
+limit = st.slider("Cantidad de registros a procesar", 10, 500, 50)
 
-col_a, col_b = st.columns([1, 4])
-with col_a:
-    btn_load = st.button("📥 Cargar Pendientes")
-
-if btn_load:
-    with st.spinner("Buscando registros sin Grupo/Subgrupo..."):
+if st.button("📥 Buscar Pendientes"):
+    with st.spinner("Consultando BD..."):
         try:
-            # LLAMADA A FASTAPI: Endpoint que busca WHERE grupo IS NULL
-            response = requests.get("http://127.0.0.1:8000/api/v1/opex/pending-classification")
-            
-            if response.status_code == 200:
-                data = response.json()
-                df = pd.DataFrame(data)
-                
-                if not df.empty:
-                    st.session_state.df_pending = df
-                    st.session_state.df_predicted = None # Resetear predicciones anteriores
-                    st.success(f"Se encontraron {len(df)} registros pendientes de clasificación.")
+            res = requests.get(f"{API_URL}/pending-classification?limit={limit}")
+            if res.status_code == 200:
+                data = res.json()
+                if data:
+                    st.session_state.df_pending = pd.DataFrame(data)
+                    st.session_state.df_predicted = None
+                    st.success(f"Se cargaron {len(data)} registros pendientes.")
                 else:
-                    st.info("¡Todo está al día! No hay registros pendientes.")
+                    st.info("¡Todo limpio! No hay gastos pendientes.")
             else:
-                st.error("Error al consultar API.")
+                st.error(f"Error API: {res.text}")
         except Exception as e:
             st.error(f"Error de conexión: {e}")
 
-# Mostrar tabla si existe
 if st.session_state.df_pending is not None and st.session_state.df_predicted is None:
-    st.dataframe(st.session_state.df_pending.head(10), use_container_width=True)
-    st.caption("Mostrando primeros 10 registros...")
+    st.dataframe(st.session_state.df_pending[['empresa','cuenta_contable','descripcion_gasto','valor']], use_container_width=True)
 
 # ==============================================================================
-# PASO 2: EJECUTAR PREDICCIÓN (LA MAGIA)
+# 2. PREDECIR
 # ==============================================================================
 if st.session_state.df_pending is not None:
-    st.divider()
-    st.subheader("2. Ejecutar Motor de IA")
-    
-    col_x, col_y = st.columns([1, 4])
-    with col_x:
-        btn_predict = st.button("⚡ Clasificar con IA", type="primary")
-    
-    if btn_predict:
-        with st.spinner("El modelo está analizando descripciones, cuentas y proveedores..."):
+    if st.button("⚡ Ejecutar Inteligencia Artificial", type="primary"):
+        with st.spinner("El modelo está pensando..."):
             try:
-                # Preparamos el payload (los datos a enviar al backend)
-                # Convertimos el DF a lista de diccionarios
-                records_to_predict = st.session_state.df_pending.to_dict(orient='records')
+                payload = st.session_state.df_pending.to_dict(orient='records')
+                res = requests.post(f"{API_URL}/predict", json=payload)
                 
-                # LLAMADA A FASTAPI: Endpoint que carga los .pkl y predice
-                response = requests.post("http://127.0.0.1:8000/api/v1/opex/predict", json=records_to_predict)
-                
-                if response.status_code == 200:
-                    predicted_data = response.json()
-                    st.session_state.df_predicted = pd.DataFrame(predicted_data)
-                    st.success("¡Clasificación terminada!")
+                if res.status_code == 200:
+                    st.session_state.df_predicted = pd.DataFrame(res.json())
+                    st.success("¡Predicción completada!")
                 else:
-                    st.error(f"Error en el modelo: {response.text}")
-                    
+                    st.error(f"Error en predicción: {res.text}")
             except Exception as e:
-                st.error(f"Error conectando con el modelo: {e}")
+                st.error(f"Error de conexión: {e}")
 
 # ==============================================================================
-# PASO 3: REVISIÓN Y RESULTADOS
+# 3. REVISAR Y GUARDAR
 # ==============================================================================
 if st.session_state.df_predicted is not None:
-    df_pred = st.session_state.df_predicted
-    
     st.divider()
-    st.subheader("3. Resultados y Confianza")
+    st.subheader("3. Revisión y Guardado")
+    st.info("💡 Puedes editar manualmente las celdas de 'Grupo' y 'Subgrupo' si la IA se equivocó.")
     
-    # Métricas de confianza
-    avg_conf = df_pred['confianza_grupo'].mean()
-    st.metric("Confianza Promedio del Modelo", f"{avg_conf:.1f}%")
+    df_pred = st.session_state.df_predicted.copy()
     
-    # Colorear filas con baja confianza para llamar la atención
-    def highlight_low_confidence(s):
-        return ['background-color: #ffcccc' if v < 60 else '' for v in s]
-
-    # Mostrar tabla con resultados
-    st.dataframe(
-        df_pred[['empresa', 'descripcion_gasto', 'cuenta_contable', 'grupo_predicho', 'subgrupo_predicho', 'confianza_grupo']],
-        use_container_width=True,
+    # Preparar tabla para edición
+    cols_order = ['empresa', 'descripcion_gasto', 'valor', 'grupo_predicho', 'subgrupo_predicho', 'confianza', 'id_transaccion']
+    
+    # DATA EDITOR: Permite corregir al usuario
+    edited_df = st.data_editor(
+        df_pred[cols_order],
         column_config={
-            "confianza_grupo": st.column_config.ProgressColumn(
-                "Nivel de Confianza",
-                help="Qué tan seguro está el modelo",
-                format="%.1f%%",
-                min_value=0,
-                max_value=100,
-            ),
-        }
+            "grupo_predicho": st.column_config.TextColumn("Grupo (Editable)"),
+            "subgrupo_predicho": st.column_config.TextColumn("Subgrupo (Editable)"),
+            "confianza": st.column_config.ProgressColumn("Confianza IA", format="%.1f%%", min_value=0, max_value=100),
+            "id_transaccion": st.column_config.NumberColumn("ID", disabled=True)
+        },
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed"
     )
     
-    # Gráfico de distribución de lo que encontró
-    fig = px.pie(df_pred, names='grupo_predicho', title='Distribución de Gastos Clasificados')
-    st.plotly_chart(fig, use_container_width=True)
+    col1, col2 = st.columns([1, 4])
+    
+    with col1:
+        if st.button("💾 Guardar Cambios en BD", type="primary"):
+            with st.spinner("Actualizando base de datos..."):
+                try:
+                    # Preparar Payload de actualización
+                    update_payload = []
+                    for _, row in edited_df.iterrows():
+                        update_payload.append({
+                            "id_transaccion": int(row['id_transaccion']),
+                            "grupo": row['grupo_predicho'],
+                            "subgrupo": row['subgrupo_predicho']
+                        })
+                    
+                    # Enviar PUT
+                    res = requests.put(f"{API_URL}/update-batch", json=update_payload)
+                    
+                    if res.status_code == 200:
+                        st.balloons()
+                        st.success(f"✅ ¡Éxito! Se actualizaron {len(update_payload)} registros.")
+                        # Limpiar estado
+                        st.session_state.df_pending = None
+                        st.session_state.df_predicted = None
+                    else:
+                        st.error(f"Error guardando: {res.text}")
+                        
+                except Exception as e:
+                    st.error(f"Error crítico: {e}")
 
-    # Botón de Guardar (Esto enviaría un UPDATE a la BD)
-    if st.button("💾 Guardar Clasificación en Base de Datos"):
-        st.toast("Funcionalidad de guardado pendiente de implementar en Backend", icon="🚧")
-        # Aquí llamarías a un endpoint PUT /api/v1/opex/update
+    with col2:
+        # Gráfico de resumen de lo que se va a guardar
+        fig = px.histogram(edited_df, x='grupo_predicho', title="Resumen de Clasificación (Pre-Guardado)")
+        st.plotly_chart(fig, use_container_width=True)

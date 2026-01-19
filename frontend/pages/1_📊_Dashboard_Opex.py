@@ -46,14 +46,14 @@ st.markdown("""
 # 2. FUNCIONES DE CARGA Y PROCESAMIENTO
 # ==============================================================================
 
-@st.cache_data(ttl=300) # Cache por 5 minutos para velocidad
+@st.cache_data(ttl=300) # Cache por 5 minutos
 def load_data(start_date, end_date):
     """Consulta la API de FastAPI"""
-    # URL de tu Backend (Asegúrate que uvicorn esté corriendo)
+    # URL de tu Backend
     API_URL = "http://127.0.0.1:8000/api/v1/opex/transactions"
     
-    # Traemos TODAS las empresas
-    empresas_list = "CONIX,GFO,LTCP,LTCP2,NCPF,LEASING,AFI,LTC,NC SPA,NC L,NC SA,IN SA,INCOFIN LEASING"
+    # Lista de todas las empresas posibles para que la API traiga todo
+    empresas_list = "CONIX,GFO,LTCP,LTCP2,NCPF,LEASING,AFI,LTC,NC SPA,NC L,NC SA,IN SA,INCOFIN LEASING,NC LEASING PERU,NC LEASING CHILE"
     
     params = {
         "start_date": start_date,
@@ -63,7 +63,12 @@ def load_data(start_date, end_date):
     
     try:
         response = requests.get(API_URL, params=params)
-        response.raise_for_status()
+        
+        # Si la API falla, lanzamos error controlado
+        if response.status_code != 200:
+            st.error(f"Error del servidor (Código {response.status_code}): {response.text}")
+            return pd.DataFrame()
+
         data = response.json()
         df = pd.DataFrame(data)
         
@@ -71,21 +76,27 @@ def load_data(start_date, end_date):
         
         # --- PREPROCESAMIENTO ---
         
-        # 1. Asignar País (Lógica de Negocio)
+        # 1. FIX DE FECHAS (CORRECCIÓN PRINCIPAL)
+        # Usamos format='mixed' para que acepte tanto "2025-01-01" como "2025-01-01 00:00:00"
+        df['fecha_transaccion'] = pd.to_datetime(df['fecha_transaccion'], format='mixed', errors='coerce')
+        
+        # Eliminar filas donde la fecha no se pudo leer (NaT)
+        df = df.dropna(subset=['fecha_transaccion'])
+        
+        df['Mes'] = df['fecha_transaccion'].dt.strftime('%Y-%m')
+        
+        # 2. Asignar País (Lógica de Negocio Mejorada)
         def get_pais(empresa):
-            empresa = str(empresa).upper()
-            if 'AFI' in empresa or 'PERU' in empresa: return 'Perú 🇵🇪'
-            if 'CONIX' in empresa or 'GFO' in empresa: return 'Colombia 🇨🇴'
-            return 'Chile 🇨u' # Default (LTC, NC, Incofin)
+            emp = str(empresa).upper()
+            if 'AFI' in emp or 'PERU' in emp or 'LTCP' in emp: 
+                return 'Perú 🇵🇪'
+            if 'CONIX' in emp or 'GFO' in emp: 
+                return 'Colombia 🇨🇴'
+            return 'Chile 🇨🇱' # Default (LTC, NC, Incofin)
             
         df['Pais'] = df['empresa'].apply(get_pais)
         
-        # 2. Formatos de Fecha
-        df['fecha_transaccion'] = pd.to_datetime(df['fecha_transaccion'])
-        df['Mes'] = df['fecha_transaccion'].dt.strftime('%Y-%m')
-        
         # 3. Validar columnas de Clasificación
-        # Si la API no trae 'grupo' (porque aún no se guarda en BD), lo simulamos
         if 'grupo' not in df.columns: df['Grupo'] = "Sin Clasificar"
         else: df['Grupo'] = df['grupo'].fillna("Sin Clasificar")
             
@@ -109,27 +120,36 @@ st.sidebar.title("Filtros")
 
 # Fechas
 today = date.today()
-year_start = date(today.year, 1, 1)
+year_start = date(today.year, 1, 1) # Inicio de este año
 fecha_corte = st.sidebar.date_input("Fecha de Corte", (year_start, today))
+
+df_raw = pd.DataFrame() # Inicializar vacío
 
 if isinstance(fecha_corte, tuple) and len(fecha_corte) == 2:
     start, end = fecha_corte
     # Cargar Datos
     df_raw = load_data(start, end)
 else:
-    st.warning("Selecciona un rango de fechas válido.")
+    st.info("Selecciona un rango de fechas válido para comenzar.")
     st.stop()
 
 if df_raw.empty:
-    st.warning("No hay datos para el rango seleccionado.")
+    st.warning("⚠️ No hay datos para el rango seleccionado. Verifica que el ETL haya cargado datos para estas fechas.")
     st.stop()
 
 # Filtros Dinámicos
-paises_sel = st.sidebar.multiselect("País", options=sorted(df_raw['Pais'].unique()), default=sorted(df_raw['Pais'].unique()))
-empresas_sel = st.sidebar.multiselect("Empresa", options=sorted(df_raw[df_raw['Pais'].isin(paises_sel)]['empresa'].unique()))
-grupos_sel = st.sidebar.multiselect("Grupo", options=sorted(df_raw['Grupo'].unique()))
+all_paises = sorted(df_raw['Pais'].unique())
+paises_sel = st.sidebar.multiselect("País", options=all_paises, default=all_paises)
 
-# Aplicar Filtros
+# Filtrar empresas basado en países seleccionados
+empresas_disponibles = sorted(df_raw[df_raw['Pais'].isin(paises_sel)]['empresa'].unique())
+empresas_sel = st.sidebar.multiselect("Empresa", options=empresas_disponibles, default=empresas_disponibles)
+
+# Filtrar grupos
+grupos_disponibles = sorted(df_raw[df_raw['empresa'].isin(empresas_sel)]['Grupo'].unique())
+grupos_sel = st.sidebar.multiselect("Grupo", options=grupos_disponibles, default=grupos_disponibles)
+
+# Aplicar Filtros al DataFrame Principal
 df = df_raw.copy()
 if paises_sel: df = df[df['Pais'].isin(paises_sel)]
 if empresas_sel: df = df[df['empresa'].isin(empresas_sel)]
@@ -142,9 +162,10 @@ st.markdown(f"### Análisis OPEX Regional (USD)")
 st.markdown("---")
 
 total_usd = df['valor'].sum()
-total_chile = df[df['Pais'].str.contains('Chile')]['valor'].sum()
-total_col = df[df['Pais'].str.contains('Colombia')]['valor'].sum()
-total_peru = df[df['Pais'].str.contains('Perú')]['valor'].sum()
+# Calculamos totales por país usando el DataFrame ORIGINAL (sin filtros) para comparar
+total_chile = df_raw[df_raw['Pais'].str.contains('Chile')]['valor'].sum()
+total_col = df_raw[df_raw['Pais'].str.contains('Colombia')]['valor'].sum()
+total_peru = df_raw[df_raw['Pais'].str.contains('Perú')]['valor'].sum()
 
 def card(title, value, flag):
     st.markdown(f"""
@@ -156,10 +177,10 @@ def card(title, value, flag):
     """, unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
-with c1: card("Total Regional", total_usd, "🌎")
-with c2: card("Gasto Chile", total_chile, "🇨🇱")
-with c3: card("Gasto Colombia", total_col, "🇨🇴")
-with c4: card("Gasto Perú", total_peru, "🇵🇪")
+with c1: card("Total Seleccionado", total_usd, "🌎")
+with c2: card("Total Chile", total_chile, "🇨🇱")
+with c3: card("Total Colombia", total_col, "🇨🇴")
+with c4: card("Total Perú", total_peru, "🇵🇪")
 
 # ==============================================================================
 # 5. GRÁFICOS NIVEL 1 (TENDENCIAS)
@@ -184,7 +205,7 @@ country_data = df.groupby('Pais')['valor'].sum().reset_index()
 
 fig_donut = px.pie(
     country_data, values='valor', names='Pais',
-    title="<b>Participación del Gasto</b> (Por País)",
+    title="<b>Participación del Gasto</b> (Selección)",
     hole=0.4,
     color_discrete_sequence=px.colors.qualitative.Pastel
 )
@@ -208,39 +229,34 @@ fig_line.update_layout(template="plotly_white", yaxis_title="USD", xaxis_title="
 col_bottom_1.plotly_chart(fig_line, use_container_width=True)
 
 # D. Top Proveedores (Barras Horizontales)
-top_prov = df.groupby('nombre_tercero')['valor'].sum().reset_index().sort_values('valor', ascending=True).tail(10)
-
-fig_prov = px.bar(
-    top_prov, x='valor', y='nombre_tercero',
-    orientation='h',
-    title="<b>Top 10 Proveedores (Gasto Regional)</b>",
-    text_auto='.2s',
-    color_discrete_sequence=['#0F9D58']
-)
-fig_prov.update_layout(yaxis_title="", xaxis_title="USD", template="plotly_white")
-col_bottom_2.plotly_chart(fig_prov, use_container_width=True)
+if 'nombre_tercero' in df.columns:
+    top_prov = df.groupby('nombre_tercero')['valor'].sum().reset_index().sort_values('valor', ascending=True).tail(10)
+    
+    fig_prov = px.bar(
+        top_prov, x='valor', y='nombre_tercero',
+        orientation='h',
+        title="<b>Top 10 Proveedores (Gasto Regional)</b>",
+        text_auto='.2s',
+        color_discrete_sequence=['#0F9D58']
+    )
+    fig_prov.update_layout(yaxis_title="", xaxis_title="USD", template="plotly_white")
+    col_bottom_2.plotly_chart(fig_prov, use_container_width=True)
 
 # ==============================================================================
-# 7. TABLA DE DETALLE (TREEMAP & GRID)
+# 7. TABLA DE DETALLE
 # ==============================================================================
 st.markdown("---")
-st.subheader("Detalle por Empresa y Grupo")
+st.subheader("Detalle de Transacciones")
 
-c_tree, c_grid = st.columns([1, 2])
+# Definir columnas a mostrar
+cols_to_show = ['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'fecha_transaccion']
+# Filtrar solo las que existen en el DF para evitar errores
+cols_existentes = [c for c in cols_to_show if c in df.columns]
 
-# E. Treemap (Mapa de árbol por Empresa -> Grupo)
-fig_tree = px.treemap(
-    df, path=['empresa', 'Grupo'], values='valor',
-    title="<b>Distribución: Empresa > Grupo</b>",
-    color='valor', color_continuous_scale='Blues'
-)
-c_tree.plotly_chart(fig_tree, use_container_width=True)
-
-# F. Tabla de Datos
-df_display = df[['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'fecha_transaccion']].copy()
+df_display = df[cols_existentes].copy()
 df_display = df_display.sort_values('valor', ascending=False)
 
-c_grid.dataframe(
+st.dataframe(
     df_display,
     use_container_width=True,
     height=400,
