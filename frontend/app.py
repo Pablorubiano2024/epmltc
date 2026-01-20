@@ -1,47 +1,69 @@
+import sys
+import os
+
+# ==============================================================================
+# 0. FIX DE IMPORTACIÓN (CRÍTICO)
+# ==============================================================================
+# Obtenemos la ruta de la carpeta donde está este archivo (frontend/)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Obtenemos la ruta padre (epmltc/)
+root_dir = os.path.dirname(current_dir)
+# Agregamos la raíz al "path" de Python para que reconozca los imports
+sys.path.append(root_dir)
+
+# ==============================================================================
+# IMPORTS
+# ==============================================================================
 import streamlit as st
-from frontend.utils.styles import load_css # Importamos nuestro estilo
+from streamlit_option_menu import option_menu
 
-# Configuración inicial
-st.set_page_config(
-    page_title="EPM Latam Trade Capital",
-    page_icon="assets/favicon.png", # Usamos el favicon
-    layout="wide"
-)
+# Ahora sí funcionan estos imports absolutos
+from frontend.utils.enterprise_style import apply_enterprise_style, render_header
+from frontend.views.dashboard import render_dashboard
+from frontend.views.classifier import render_classifier
+from frontend.views.projection import render_projection
+from frontend.views.explorer import render_explorer
 
-# Cargar Estilos y Logo
-load_css()
+# ==============================================================================
+# CONFIGURACIÓN ESTRUCTURAL
+# ==============================================================================
+# 1. Configuración de página (Debe ser lo primero de Streamlit)
+st.set_page_config(page_title="EPM Enterprise", layout="wide", page_icon="🏢")
 
-# --- HERO SECTION (Bienvenida) ---
-col_logo, col_text = st.columns([1, 4])
+# 2. Aplicar CSS Global
+apply_enterprise_style()
 
-with col_text:
-    st.title("Sistema de Gestión EPM")
-    st.markdown("#### **Latam Trade Capital** | Control Financiero & Operativo")
-    st.markdown("Bienvenido al portal centralizado de gestión. Seleccione un módulo en el menú lateral para comenzar.")
+# 3. Menú de Navegación Superior
+# Usamos un contenedor fluido para que ocupe todo el ancho
+with st.container():
+    selected = option_menu(
+        menu_title=None,  # Ocultamos el título para que parezca navbar
+        options=["Dashboard", "Explorador", "Clasificador IA", "Simulador"],
+        icons=["bar-chart-fill", "table", "robot", "graph-up-arrow"],
+        menu_icon="cast",
+        default_index=0,
+        orientation="horizontal",
+        styles={
+            "container": {"padding": "0!important", "background-color": "#FFFFFF", "border-radius": "0", "margin": "0"},
+            "icon": {"color": "#19AC86", "font-size": "14px"}, 
+            "nav-link": {"font-size": "14px", "text-align": "center", "margin": "0px", "--hover-color": "#f0f2f6"},
+            "nav-link-selected": {"background-color": "#122442", "color": "white", "font-weight": "600"},
+        }
+    )
 
-st.markdown("---")
+# 4. Enrutador de Vistas (Carga el contenido según el menú)
+if selected == "Dashboard":
+    render_header("Dashboard Operativo")
+    render_dashboard()
 
-# --- TARJETAS DE NAVEGACIÓN ---
-# Usamos columnas para crear un menú visual en el centro
-c1, c2, c3 = st.columns(3)
+elif selected == "Explorador":
+    render_header("Explorador de Datos")
+    render_explorer()
 
-with c1:
-    with st.container(border=True):
-        st.header("📊 Dashboard OPEX")
-        st.markdown("Visualización de gastos operativos, tendencias mensuales y distribución por centro de costo.")
-        st.info("Ideal para: Gerencia Financiera")
+elif selected == "Clasificador IA":
+    render_header("Inteligencia Artificial")
+    render_classifier()
 
-with c2:
-    with st.container(border=True):
-        st.header("🤖 Clasificador IA")
-        st.markdown("Motor de Inteligencia Artificial para categorizar gastos automáticamente según el histórico.")
-        st.info("Ideal para: Equipo Contable")
-
-with c3:
-    with st.container(border=True):
-        st.header("📈 Proyección")
-        st.markdown("Simulador financiero para evaluación de compra de carteras y flujos de caja futuros.")
-        st.info("Ideal para: Planeación Financiera")
-
-st.markdown("---")
-st.caption("© 2025 Latam Trade Capital | Powered by Data Analytics Team")
+elif selected == "Simulador":
+    render_header("Proyección Financiera")
+    render_projection()
