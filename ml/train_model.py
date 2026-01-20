@@ -9,56 +9,45 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE RUTAS Y ARCHIVOS
+# 1. CONFIGURACIÓN
 # ==============================================================================
-# Obtenemos la ruta base del proyecto (subimos un nivel desde la carpeta 'ml')
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Rutas de Archivos
-FILE_NAME = "Opex Real 2025 (1).xlsx" # <--- ASEGÚRATE QUE ESTE NOMBRE SEA EXACTO
+FILE_NAME = "Opex Real 2025 (1).xlsx" # Asegúrate que este sea el nombre correcto en tu carpeta data
 DATA_PATH = os.path.join(BASE_DIR, "data", FILE_NAME)
 MODELS_DIR = os.path.join(BASE_DIR, "backend", "ml_models")
 
-# Aseguramos que la carpeta de destino exista
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# ==============================================================================
-# 2. CONFIGURACIÓN DE COLUMNAS (EXCEL HISTÓRICO)
-# ==============================================================================
+# Columnas del Excel
 COL_GRUPO    = "Grupo"
 COL_SUBGRUPO = "Subgrupo"
 COL_DESC     = "Glosa Documento nuevo"
 COL_CUENTA   = "Código Cuenta"
-COL_PROV     = "Rut Nuevo" # Usamos RUT para ser consistentes con el ETL
+COL_PROV     = "Rut Nuevo" # Usamos RUT para mayor precisión
 
-print(f"🚀 INICIANDO ENTRENAMIENTO...")
-print(f"   📂 Leyendo datos desde: {DATA_PATH}")
+print(f"🚀 INICIANDO ENTRENAMIENTO MEJORADO...")
 
 # ==============================================================================
-# 3. CARGA Y LIMPIEZA DE DATOS
+# 2. CARGA DE DATOS
 # ==============================================================================
 if not os.path.exists(DATA_PATH):
-    raise FileNotFoundError(f"❌ No se encontró el archivo en {DATA_PATH}. Verifica la carpeta 'data'.")
+    raise FileNotFoundError(f"❌ Falta el archivo: {DATA_PATH}")
 
 try:
     df = pd.read_excel(DATA_PATH)
-except Exception as e:
-    print(f"   ⚠️ Error leyendo Excel: {e}")
-    exit()
+except:
+    df = pd.read_excel(DATA_PATH, engine='openpyxl')
 
-print(f"   📊 Total registros iniciales: {len(df)}")
-
-# Eliminar filas sin clasificación (Grupo es obligatorio para aprender)
+# Limpieza
 df = df.dropna(subset=[COL_GRUPO])
-
-# Rellenar nulos en textos
 df[COL_DESC] = df[COL_DESC].fillna('')
 df[COL_PROV] = df[COL_PROV].astype(str).fillna('')
 df[COL_SUBGRUPO] = df[COL_SUBGRUPO].fillna('General')
 
-# --- INGENIERÍA DE CARACTERÍSTICAS ---
-# Creamos la "Huella Digital" uniendo: Cuenta + RUT + Descripción
-print("   🧠 Generando vectores de texto...")
+# --- INGENIERÍA DE CARACTERÍSTICAS (MEJORADA) ---
+# Usamos: Cuenta + RUT + Descripción
+# Nota: No agregamos 'Empresa' aquí porque queremos que el modelo aprenda
+# reglas universales (ej: "Uber" es transporte en Chile y en Perú).
 df['TEXTO_COMBINADO'] = (
     df[COL_CUENTA].astype(str) + " " +
     df[COL_PROV].astype(str) + " " +
@@ -67,52 +56,42 @@ df['TEXTO_COMBINADO'] = (
 
 X = df['TEXTO_COMBINADO']
 
-# ==============================================================================
-# 4. ENTRENAMIENTO MODELO A: GRUPO
-# ==============================================================================
-print("\n🤖 Entrenando Modelo 1: GRUPO...")
-y_grupo = df[COL_GRUPO]
+print(f"📊 Registros para entrenar: {len(df)}")
 
-# Split 80/20
+# ==============================================================================
+# 3. ENTRENAMIENTO (PARAMETROS OPTIMIZADOS)
+# ==============================================================================
+
+# Aumentamos n_estimators a 150 y max_features a 6000 para mayor precisión
+
+# --- MODELO GRUPO ---
+print("\n🤖 Entrenando GRUPO (Configuración Robusta)...")
+y_grupo = df[COL_GRUPO]
 X_train, X_test, y_train, y_test = train_test_split(X, y_grupo, test_size=0.2, random_state=42)
 
 pipeline_grupo = Pipeline([
-    ('tfidf', TfidfVectorizer(max_features=5000, stop_words='english', ngram_range=(1,2))),
-    ('clf', RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42))
+    ('tfidf', TfidfVectorizer(max_features=6000, stop_words='english', ngram_range=(1,2))),
+    ('clf', RandomForestClassifier(n_estimators=150, n_jobs=-1, random_state=42))
 ])
-
 pipeline_grupo.fit(X_train, y_train)
-acc_grupo = accuracy_score(y_test, pipeline_grupo.predict(X_test))
-print(f"   ✅ Precisión (Accuracy): {acc_grupo:.2%}")
+print(f"   ✅ Precisión GRUPO: {pipeline_grupo.score(X_test, y_test):.2%}")
 
-# ==============================================================================
-# 5. ENTRENAMIENTO MODELO B: SUBGRUPO
-# ==============================================================================
-print("\n🤖 Entrenando Modelo 2: SUBGRUPO...")
+# --- MODELO SUBGRUPO ---
+print("\n🤖 Entrenando SUBGRUPO (Configuración Robusta)...")
 y_subgrupo = df[COL_SUBGRUPO]
-
 X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y_subgrupo, test_size=0.2, random_state=42)
 
 pipeline_subgrupo = Pipeline([
-    ('tfidf', TfidfVectorizer(max_features=5000, stop_words='english', ngram_range=(1,2))),
-    ('clf', RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42))
+    ('tfidf', TfidfVectorizer(max_features=6000, stop_words='english', ngram_range=(1,2))),
+    ('clf', RandomForestClassifier(n_estimators=150, n_jobs=-1, random_state=42))
 ])
-
 pipeline_subgrupo.fit(X_train_s, y_train_s)
-acc_subgrupo = accuracy_score(y_test_s, pipeline_subgrupo.predict(X_test_s))
-print(f"   ✅ Precisión (Accuracy): {acc_subgrupo:.2%}")
+print(f"   ✅ Precisión SUBGRUPO: {pipeline_subgrupo.score(X_test_s, y_test_s):.2%}")
 
 # ==============================================================================
-# 6. GUARDAR MODELOS (.PKL)
+# 4. GUARDADO
 # ==============================================================================
-print("\n💾 Guardando cerebros en backend/ml_models/ ...")
-
-path_grupo = os.path.join(MODELS_DIR, 'modelo_grupo.pkl')
-path_subgrupo = os.path.join(MODELS_DIR, 'modelo_subgrupo.pkl')
-
-joblib.dump(pipeline_grupo, path_grupo)
-joblib.dump(pipeline_subgrupo, path_subgrupo)
-
-print(f"   ✅ Modelo Grupo guardado en: {path_grupo}")
-print(f"   ✅ Modelo Subgrupo guardado en: {path_subgrupo}")
-print("\n🎉 ENTRENAMIENTO FINALIZADO EXITOSAMENTE.")
+print("\n💾 Guardando modelos...")
+joblib.dump(pipeline_grupo, os.path.join(MODELS_DIR, 'modelo_grupo.pkl'))
+joblib.dump(pipeline_subgrupo, os.path.join(MODELS_DIR, 'modelo_subgrupo.pkl'))
+print("🎉 FINALIZADO.")

@@ -1,38 +1,47 @@
 import streamlit as st
+from frontend.utils.styles import load_css # Importamos nuestro estilo
 
-# Configuración de la página
+# Configuración inicial
 st.set_page_config(
     page_title="EPM Latam Trade Capital",
-    page_icon="📈",
+    page_icon="assets/favicon.png", # Usamos el favicon
     layout="wide"
 )
 
-# Título y Bienvenida
-st.title("📈 EPM Latam Trade Capital")
-st.markdown("### Sistema de Gestión de Desempeño Empresarial")
+# Cargar Estilos y Logo
+load_css()
 
-st.info("Bienvenido al módulo de control financiero. Selecciona una herramienta en el menú de la izquierda.")
+# --- HERO SECTION (Bienvenida) ---
+col_logo, col_text = st.columns([1, 4])
 
-# Dashboard de resumen
-col1, col2, col3 = st.columns(3)
+with col_text:
+    st.title("Sistema de Gestión EPM")
+    st.markdown("#### **Latam Trade Capital** | Control Financiero & Operativo")
+    st.markdown("Bienvenido al portal centralizado de gestión. Seleccione un módulo en el menú lateral para comenzar.")
 
-with col1:
-    st.markdown("""
-    ### 📊 Dashboard OPEX
-    Visualiza la evolución de gastos, distribución por empresa y tendencias mensuales.
-    """)
+st.markdown("---")
 
-with col2:
-    st.markdown("""
-    ### 🔍 Explorador de Datos
-    Consulta el detalle de cada transacción, filtra por proveedor, cuenta o fecha y descarga reportes.
-    """)
+# --- TARJETAS DE NAVEGACIÓN ---
+# Usamos columnas para crear un menú visual en el centro
+c1, c2, c3 = st.columns(3)
 
-with col3:
-    st.markdown("""
-    ### 🤖 Clasificador IA
-    Utiliza Inteligencia Artificial para categorizar automáticamente los gastos nuevos o sin clasificar.
-    """)
+with c1:
+    with st.container(border=True):
+        st.header("📊 Dashboard OPEX")
+        st.markdown("Visualización de gastos operativos, tendencias mensuales y distribución por centro de costo.")
+        st.info("Ideal para: Gerencia Financiera")
 
-st.divider()
-st.caption("v1.0 | Desarrollado con FastAPI + Streamlit + Machine Learning")
+with c2:
+    with st.container(border=True):
+        st.header("🤖 Clasificador IA")
+        st.markdown("Motor de Inteligencia Artificial para categorizar gastos automáticamente según el histórico.")
+        st.info("Ideal para: Equipo Contable")
+
+with c3:
+    with st.container(border=True):
+        st.header("📈 Proyección")
+        st.markdown("Simulador financiero para evaluación de compra de carteras y flujos de caja futuros.")
+        st.info("Ideal para: Planeación Financiera")
+
+st.markdown("---")
+st.caption("© 2025 Latam Trade Capital | Powered by Data Analytics Team")

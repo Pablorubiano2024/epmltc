@@ -1,58 +1,43 @@
+import sys
+import os
+
+# ==============================================================================
+# 0. FIX DE IMPORTACIÓN
+# ==============================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))
+frontend_dir = os.path.dirname(current_dir)
+root_dir = os.path.dirname(frontend_dir)
+sys.path.append(root_dir)
+
+# ==============================================================================
+# IMPORTS
+# ==============================================================================
 import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, date
+from frontend.utils.styles import load_css 
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
+# CONFIGURACIÓN Y ESTILOS
 # ==============================================================================
 st.set_page_config(page_title="Dashboard OPEX", layout="wide", page_icon="📊")
 
-# CSS Personalizado para tarjetas estilo "Power BI"
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #FFFFFF;
-        border: 1px solid #E0E0E0;
-        border-radius: 10px;
-        padding: 20px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-        text-align: center;
-        margin-bottom: 10px;
-    }
-    .metric-title {
-        color: #666;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .metric-value {
-        color: #000;
-        font-size: 26px;
-        font-weight: bold;
-    }
-    .metric-sub {
-        color: #999;
-        font-size: 12px;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #F8F9FA;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Cargar estilos globales y logo
+load_css()
+
+# Paleta de Colores Corporativa (LTC)
+LTC_PALETTE = ['#122442', '#19AC86', '#FE4A49', '#A2E3EB', '#6c757d']
 
 # ==============================================================================
-# 2. FUNCIONES DE CARGA Y PROCESAMIENTO
+# FUNCIONES DE CARGA
 # ==============================================================================
-
-@st.cache_data(ttl=300) # Cache por 5 minutos
+@st.cache_data(ttl=300)
 def load_data(start_date, end_date):
-    """Consulta la API de FastAPI"""
-    # URL de tu Backend
+    """Consulta la API de FastAPI y pre-procesa los datos"""
     API_URL = "http://127.0.0.1:8000/api/v1/opex/transactions"
     
-    # Lista de todas las empresas posibles para que la API traiga todo
     empresas_list = "CONIX,GFO,LTCP,LTCP2,NCPF,LEASING,AFI,LTC,NC SPA,NC L,NC SA,IN SA,INCOFIN LEASING,NC LEASING PERU,NC LEASING CHILE"
     
     params = {
@@ -63,10 +48,8 @@ def load_data(start_date, end_date):
     
     try:
         response = requests.get(API_URL, params=params)
-        
-        # Si la API falla, lanzamos error controlado
         if response.status_code != 200:
-            st.error(f"Error del servidor (Código {response.status_code}): {response.text}")
+            st.error(f"Error API ({response.status_code}): {response.text}")
             return pd.DataFrame()
 
         data = response.json()
@@ -76,194 +59,180 @@ def load_data(start_date, end_date):
         
         # --- PREPROCESAMIENTO ---
         
-        # 1. FIX DE FECHAS (CORRECCIÓN PRINCIPAL)
-        # Usamos format='mixed' para que acepte tanto "2025-01-01" como "2025-01-01 00:00:00"
-        df['fecha_transaccion'] = pd.to_datetime(df['fecha_transaccion'], format='mixed', errors='coerce')
+        # 1. FIX FECHAS: Usamos 'fecha_corte' que es el cierre de mes (YYYY-MM-DD)
+        # Convertimos a datetime
+        df['fecha_corte'] = pd.to_datetime(df['fecha_corte'], errors='coerce')
         
-        # Eliminar filas donde la fecha no se pudo leer (NaT)
-        df = df.dropna(subset=['fecha_transaccion'])
+        # Creamos una versión String limpia para asegurar que NO salga la hora en las tablas
+        df['Fecha Corte'] = df['fecha_corte'].dt.strftime('%Y-%m-%d')
         
-        df['Mes'] = df['fecha_transaccion'].dt.strftime('%Y-%m')
+        # Eliminamos nulos
+        df = df.dropna(subset=['fecha_corte'])
         
-        # 2. Asignar País (Lógica de Negocio Mejorada)
+        # 2. Asignar País
         def get_pais(empresa):
             emp = str(empresa).upper()
             if 'AFI' in emp or 'PERU' in emp or 'LTCP' in emp: 
                 return 'Perú 🇵🇪'
             if 'CONIX' in emp or 'GFO' in emp: 
                 return 'Colombia 🇨🇴'
-            return 'Chile 🇨🇱' # Default (LTC, NC, Incofin)
+            return 'Chile 🇨🇱'
             
         df['Pais'] = df['empresa'].apply(get_pais)
         
-        # 3. Validar columnas de Clasificación
-        if 'grupo' not in df.columns: df['Grupo'] = "Sin Clasificar"
-        else: df['Grupo'] = df['grupo'].fillna("Sin Clasificar")
-            
-        if 'subgrupo' not in df.columns: df['Subgrupo'] = "General"
-        else: df['Subgrupo'] = df['subgrupo'].fillna("General")
-            
-        # 4. Asegurar numéricos
+        # 3. Limpieza de Nulos
+        df['Grupo'] = df.get('grupo', pd.Series(['Sin Clasificar']*len(df))).fillna('Sin Clasificar')
+        df['Subgrupo'] = df.get('subgrupo', pd.Series(['General']*len(df))).fillna('General')
         df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0)
         
         return df
         
     except Exception as e:
-        st.error(f"Error conectando con el servidor: {e}")
+        st.error(f"Error de conexión: {e}")
         return pd.DataFrame()
 
 # ==============================================================================
-# 3. SIDEBAR (FILTROS)
+# SIDEBAR (FILTROS)
 # ==============================================================================
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2830/2830175.png", width=50)
 st.sidebar.title("Filtros")
 
-# Fechas
 today = date.today()
-year_start = date(today.year, 1, 1) # Inicio de este año
-fecha_corte = st.sidebar.date_input("Fecha de Corte", (year_start, today))
+year_start = date(today.year, 1, 1)
+fecha_corte_input = st.sidebar.date_input("Rango de Fechas (Corte)", (year_start, today))
 
-df_raw = pd.DataFrame() # Inicializar vacío
+df_raw = pd.DataFrame()
 
-if isinstance(fecha_corte, tuple) and len(fecha_corte) == 2:
-    start, end = fecha_corte
-    # Cargar Datos
+if isinstance(fecha_corte_input, tuple) and len(fecha_corte_input) == 2:
+    start, end = fecha_corte_input
     df_raw = load_data(start, end)
 else:
-    st.info("Selecciona un rango de fechas válido para comenzar.")
+    st.info("Selecciona un rango válido.")
     st.stop()
 
 if df_raw.empty:
-    st.warning("⚠️ No hay datos para el rango seleccionado. Verifica que el ETL haya cargado datos para estas fechas.")
+    st.warning("⚠️ No hay datos para mostrar en este rango.")
     st.stop()
 
-# Filtros Dinámicos
+# Filtros en Cascada
 all_paises = sorted(df_raw['Pais'].unique())
 paises_sel = st.sidebar.multiselect("País", options=all_paises, default=all_paises)
 
-# Filtrar empresas basado en países seleccionados
-empresas_disponibles = sorted(df_raw[df_raw['Pais'].isin(paises_sel)]['empresa'].unique())
-empresas_sel = st.sidebar.multiselect("Empresa", options=empresas_disponibles, default=empresas_disponibles)
+empresas_avail = sorted(df_raw[df_raw['Pais'].isin(paises_sel)]['empresa'].unique())
+empresas_sel = st.sidebar.multiselect("Empresa", options=empresas_avail, default=empresas_avail)
 
-# Filtrar grupos
-grupos_disponibles = sorted(df_raw[df_raw['empresa'].isin(empresas_sel)]['Grupo'].unique())
-grupos_sel = st.sidebar.multiselect("Grupo", options=grupos_disponibles, default=grupos_disponibles)
+grupos_avail = sorted(df_raw[df_raw['empresa'].isin(empresas_sel)]['Grupo'].unique())
+grupos_sel = st.sidebar.multiselect("Grupo", options=grupos_avail, default=grupos_avail)
 
-# Aplicar Filtros al DataFrame Principal
+# Aplicar Filtros
 df = df_raw.copy()
 if paises_sel: df = df[df['Pais'].isin(paises_sel)]
 if empresas_sel: df = df[df['empresa'].isin(empresas_sel)]
 if grupos_sel: df = df[df['Grupo'].isin(grupos_sel)]
 
 # ==============================================================================
-# 4. CABECERA (KPI CARDS)
+# KPI CARDS
 # ==============================================================================
-st.markdown(f"### Análisis OPEX Regional (USD)")
-st.markdown("---")
+st.markdown("### 🌎 Resumen Financiero (YTD)")
 
 total_usd = df['valor'].sum()
-# Calculamos totales por país usando el DataFrame ORIGINAL (sin filtros) para comparar
 total_chile = df_raw[df_raw['Pais'].str.contains('Chile')]['valor'].sum()
 total_col = df_raw[df_raw['Pais'].str.contains('Colombia')]['valor'].sum()
 total_peru = df_raw[df_raw['Pais'].str.contains('Perú')]['valor'].sum()
 
-def card(title, value, flag):
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-title">{flag} {title}</div>
-        <div class="metric-value">${value:,.0f}</div>
-        <div class="metric-sub">Acumulado USD</div>
-    </div>
-    """, unsafe_allow_html=True)
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Seleccionado", f"${total_usd:,.0f}", "USD")
+k2.metric("Total Chile 🇨🇱", f"${total_chile:,.0f}", help="Total País sin filtros")
+k3.metric("Total Colombia 🇨🇴", f"${total_col:,.0f}", help="Total País sin filtros")
+k4.metric("Total Perú 🇵🇪", f"${total_peru:,.0f}", help="Total País sin filtros")
 
-c1, c2, c3, c4 = st.columns(4)
-with c1: card("Total Seleccionado", total_usd, "🌎")
-with c2: card("Total Chile", total_chile, "🇨🇱")
-with c3: card("Total Colombia", total_col, "🇨🇴")
-with c4: card("Total Perú", total_peru, "🇵🇪")
+st.markdown("---")
 
 # ==============================================================================
-# 5. GRÁFICOS NIVEL 1 (TENDENCIAS)
+# GRÁFICOS (Fila 1)
 # ==============================================================================
-st.write(" ") # Espacio
 col_left, col_right = st.columns([2, 1])
 
-# A. Comportamiento Regional (Barras Mensuales)
-monthly_data = df.groupby('Mes')['valor'].sum().reset_index()
+# A. Tendencia Mensual (CORREGIDO)
+# Agrupamos explícitamente por 'fecha_corte' (que es un datetime)
+monthly_data = df.groupby('fecha_corte')['valor'].sum().reset_index().sort_values('fecha_corte')
 
 fig_bar = px.bar(
-    monthly_data, x='Mes', y='valor',
+    monthly_data, 
+    x='fecha_corte', 
+    y='valor',
     text_auto='.2s',
-    title="<b>Comportamiento Regional Gasto</b> (Por Mes)",
-    color_discrete_sequence=['#4285F4']
+    title="<b>Tendencia Mensual de Gastos (Por Fecha de Corte)</b>",
+    color_discrete_sequence=[LTC_PALETTE[0]]
 )
-fig_bar.update_layout(yaxis_title="USD", xaxis_title="", template="plotly_white")
+
+# FIX: Forzar formato de fecha en el eje X para quitar la hora
+fig_bar.update_xaxes(
+    tickformat="%Y-%m-%d",  # Formato Año-Mes-Día
+    dtick="M1",             # Mostrar un tick por mes
+    title=None
+)
+fig_bar.update_layout(yaxis_title="Monto (USD)", template="plotly_white")
 col_left.plotly_chart(fig_bar, use_container_width=True)
 
-# B. Participación por País (Dona)
+# B. Donut por País
 country_data = df.groupby('Pais')['valor'].sum().reset_index()
-
 fig_donut = px.pie(
     country_data, values='valor', names='Pais',
-    title="<b>Participación del Gasto</b> (Selección)",
-    hole=0.4,
-    color_discrete_sequence=px.colors.qualitative.Pastel
+    title="<b>Distribución por País</b>",
+    hole=0.5,
+    color_discrete_sequence=LTC_PALETTE
 )
 col_right.plotly_chart(fig_donut, use_container_width=True)
 
 # ==============================================================================
-# 6. GRÁFICOS NIVEL 2 (DETALLE COMPLEJO)
+# GRÁFICOS (Fila 2)
 # ==============================================================================
-col_bottom_1, col_bottom_2 = st.columns([1, 1])
+c1, c2 = st.columns(2)
 
-# C. Evolución por País (Líneas)
-monthly_country = df.groupby(['Mes', 'Pais'])['valor'].sum().reset_index()
-
-fig_line = px.line(
-    monthly_country, x='Mes', y='valor', color='Pais',
-    title="<b>Evolución de Gasto por País</b>",
-    markers=True,
-    color_discrete_sequence=px.colors.qualitative.Safe
+# C. Detalle por Empresa
+fig_tree = px.treemap(
+    df, path=[px.Constant("Regional"), 'Pais', 'empresa'], values='valor',
+    title="<b>Mapa de Calor por Empresa</b>",
+    color='valor', color_continuous_scale='Blues'
 )
-fig_line.update_layout(template="plotly_white", yaxis_title="USD", xaxis_title="")
-col_bottom_1.plotly_chart(fig_line, use_container_width=True)
+c1.plotly_chart(fig_tree, use_container_width=True)
 
-# D. Top Proveedores (Barras Horizontales)
+# D. Top Proveedores
 if 'nombre_tercero' in df.columns:
     top_prov = df.groupby('nombre_tercero')['valor'].sum().reset_index().sort_values('valor', ascending=True).tail(10)
-    
     fig_prov = px.bar(
-        top_prov, x='valor', y='nombre_tercero',
-        orientation='h',
-        title="<b>Top 10 Proveedores (Gasto Regional)</b>",
+        top_prov, x='valor', y='nombre_tercero', orientation='h',
+        title="<b>Top 10 Proveedores</b>",
         text_auto='.2s',
-        color_discrete_sequence=['#0F9D58']
+        color_discrete_sequence=[LTC_PALETTE[1]]
     )
-    fig_prov.update_layout(yaxis_title="", xaxis_title="USD", template="plotly_white")
-    col_bottom_2.plotly_chart(fig_prov, use_container_width=True)
+    fig_prov.update_layout(yaxis_title=None, xaxis_title="USD", template="plotly_white")
+    c2.plotly_chart(fig_prov, use_container_width=True)
 
 # ==============================================================================
-# 7. TABLA DE DETALLE
+# TABLA DETALLE
 # ==============================================================================
-st.markdown("---")
-st.subheader("Detalle de Transacciones")
+st.markdown("### 📋 Detalle de Transacciones")
 
-# Definir columnas a mostrar
-cols_to_show = ['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'fecha_transaccion']
-# Filtrar solo las que existen en el DF para evitar errores
-cols_existentes = [c for c in cols_to_show if c in df.columns]
-
-df_display = df[cols_existentes].copy()
-df_display = df_display.sort_values('valor', ascending=False)
+cols_mostrar = ['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'Fecha Corte']
+cols_validas = [c for c in cols_mostrar if c in df.columns]
 
 st.dataframe(
-    df_display,
+    df[cols_validas].sort_values('valor', ascending=False),
     use_container_width=True,
     height=400,
     column_config={
-        "valor": st.column_config.NumberColumn("Monto USD", format="$%d"),
-        "fecha_transaccion": st.column_config.DateColumn("Fecha"),
-        "descripcion_gasto": st.column_config.TextColumn("Detalle", width="medium"),
+        "valor": st.column_config.NumberColumn("Monto", format="$%d"),
+        "Fecha Corte": st.column_config.TextColumn("Fecha Corte"), # Usamos la versión string limpia
     },
     hide_index=True
+)
+
+# Botón Descarga
+csv = df[cols_validas].to_csv(index=False).encode('utf-8')
+st.download_button(
+    "📥 Descargar Data (CSV)",
+    data=csv,
+    file_name="opex_report.csv",
+    mime="text/csv"
 )

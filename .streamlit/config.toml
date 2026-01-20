@@ -1,0 +1,12 @@
+[theme]
+primaryColor = "#19AC86"          # Color de los botones y énfasis (Verde LTC)
+backgroundColor = "#F4F6F9"       # Fondo gris muy claro (para que resalten las tarjetas blancas)
+secondaryBackgroundColor = "#FFFFFF" # Fondo de la barra lateral (Blanco limpio)
+textColor = "#122442"             # Color del texto (Azul oscuro profundo)
+font = "sans serif"
+
+[server]
+enableCORS = false
+
+[browser]
+gatherUsageStats = false
