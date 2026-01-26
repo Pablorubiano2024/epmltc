@@ -64,18 +64,22 @@ class UpdateClasificacion(BaseModel):
 def get_opex_summary(year: int = 2025, db: Session = Depends(get_db)):
     """
     Obtiene el total de gastos agrupado por Empresa y Mes de Corte.
-    Usa 'fecha_corte' para alinear con el cierre contable.
     """
     try:
         sql = text("""
             SELECT 
                 empresa,
-                TO_CHAR(fecha_corte, 'YYYY-MM') as periodo,
+                TO_CHAR(CAST(fecha_corte AS DATE), 'YYYY-MM') as periodo,
                 SUM(valor) as total
             FROM control_gestion.libros_diarios_consolidados
-            WHERE EXTRACT(YEAR FROM fecha_corte) = :year
-              AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%')
-            GROUP BY empresa, TO_CHAR(fecha_corte, 'YYYY-MM')
+            WHERE EXTRACT(YEAR FROM CAST(fecha_corte AS DATE)) = :year
+              AND (
+                  cuenta_contable LIKE '31%' OR 
+                  cuenta_contable LIKE '32%' OR 
+                  cuenta_contable LIKE '42%' OR 
+                  cuenta_contable LIKE '5%'
+              )
+            GROUP BY empresa, TO_CHAR(CAST(fecha_corte AS DATE), 'YYYY-MM')
             ORDER BY periodo, empresa
         """)
         
@@ -89,36 +93,45 @@ def get_opex_summary(year: int = 2025, db: Session = Depends(get_db)):
         print(f"❌ Error en SQL Summary: {e}")
         raise HTTPException(status_code=500, detail=f"Error consultando base de datos: {str(e)}")
 
-# --- B. EXPLORADOR DE DATOS (FILTROS POR FECHA DE CORTE) ---
+# --- B. EXPLORADOR DE DATOS (FILTROS) ---
 @router.get("/transactions")
 def get_transactions(
     start_date: str, 
     end_date: str, 
-    empresas: str, # Recibe string separado por comas: "AFI,CONIX"
+    empresas: str, # Recibe string "AFI,CONIX,GFO"
     cuenta: Optional[str] = None,
+    limit: int = 0, # Parámetro nuevo: 0 = Sin límite (traer todo)
     db: Session = Depends(get_db)
 ):
     try:
         empresa_list = empresas.split(",")
         
-        # Base de la consulta usando fecha_corte
+        # Base de la consulta
         sql_query = """
             SELECT * FROM control_gestion.libros_diarios_consolidados
-            WHERE fecha_corte BETWEEN :start AND :end
+            WHERE CAST(fecha_corte AS DATE) BETWEEN :start AND :end
             AND empresa = ANY(:emp_list)
         """
         params = {"start": start_date, "end": end_date, "emp_list": empresa_list}
         
-        # Filtro opcional por cuenta (OPEX por defecto si no se especifica otra)
+        # Filtro opcional por cuenta
         if cuenta:
             sql_query += " AND cuenta_contable LIKE :cta"
             params["cta"] = f"{cuenta}%"
         else:
-            # Por defecto mostrar solo cuentas de gasto para no saturar con activos/pasivos
-            sql_query += " AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%')"
+            # Filtro OPEX General (Incluyendo clase 5 para GFO)
+            sql_query += """ AND (
+                cuenta_contable LIKE '31%' OR 
+                cuenta_contable LIKE '32%' OR 
+                cuenta_contable LIKE '42%' OR 
+                cuenta_contable LIKE '5%'
+            )"""
             
-        # Límite de seguridad
-        sql_query += " ORDER BY fecha_corte DESC LIMIT 5000"
+        sql_query += " ORDER BY fecha_corte DESC"
+        
+        # LÓGICA DE LÍMITE
+        if limit > 0:
+            sql_query += f" LIMIT {limit}"
             
         result = db.execute(text(sql_query), params).fetchall()
         
@@ -133,13 +146,18 @@ def get_transactions(
 @router.get("/pending-classification")
 def get_pending_classification(limit: int = 50, db: Session = Depends(get_db)):
     """
-    Trae gastos OPEX que tienen Grupo o Subgrupo vacío.
+    Trae gastos OPEX que tienen Grupo vacío para ser clasificados por la IA.
     """
     try:
         sql = text("""
             SELECT * FROM control_gestion.libros_diarios_consolidados
             WHERE (grupo IS NULL OR grupo = '')
-            AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%')
+            AND (
+                cuenta_contable LIKE '31%' OR 
+                cuenta_contable LIKE '32%' OR 
+                cuenta_contable LIKE '42%' OR 
+                cuenta_contable LIKE '5%'
+            )
             ORDER BY fecha_corte DESC
             LIMIT :limit
         """)

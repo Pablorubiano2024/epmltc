@@ -8,6 +8,8 @@ En una terminal:
 
 2. correr el modelo: poetry run python ml/train_model.py
 
+3. correr la clasificacion en BD: poetry run python ml/run_full_classification.py
+
 
 En otra terminal
 

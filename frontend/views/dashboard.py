@@ -1,24 +1,34 @@
+import sys
+import os
 import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
 from datetime import datetime, date
+from frontend.utils.styles import load_css 
 
 # Paleta de Colores Corporativa (LTC)
 LTC_PALETTE = ['#122442', '#19AC86', '#FE4A49', '#A2E3EB', '#6c757d', '#FFC107', '#4285F4']
 
+# ==============================================================================
+# FUNCIÓN DE CARGA DE DATOS
+# ==============================================================================
 @st.cache_data(ttl=300)
 def load_data(start_date, end_date):
-    """Consulta la API de FastAPI y pre-procesa los datos"""
+    """
+    Consulta la API de FastAPI y pre-procesa los datos.
+    Cache por 5 minutos para velocidad.
+    """
     API_URL = "http://127.0.0.1:8000/api/v1/opex/transactions"
     
-    # Traemos todas las empresas
+    # Lista completa de empresas del ETL
     empresas_list = "CONIX,GFO,LTCP,LTCP2,NCPF,LEASING,AFI,LTC,NC SPA,NC L,NC SA,IN SA,INCOFIN LEASING,NC LEASING PERU,NC LEASING CHILE"
     
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "empresas": empresas_list
+        "empresas": empresas_list,
+        "limit": 0 # IMPORTANTE: 0 para traer TODO sin cortes
     }
     
     try:
@@ -34,25 +44,32 @@ def load_data(start_date, end_date):
         
         # --- PREPROCESAMIENTO ---
         
-        # 1. FECHAS
+        # 1. FIX FECHAS
         df['fecha_corte'] = pd.to_datetime(df['fecha_corte'], errors='coerce')
         df = df.dropna(subset=['fecha_corte'])
-        # Creamos columna Mes (Texto) para ordenar bien la gráfica de barras
+        df['Fecha Corte'] = df['fecha_corte'].dt.strftime('%Y-%m-%d')
+        # Mes como texto (YYYY-MM) para agrupar gráficas
         df['Mes'] = df['fecha_corte'].dt.strftime('%Y-%m')
-        df['Fecha_Str'] = df['fecha_corte'].dt.strftime('%Y-%m-%d')
         
-        # 2. PAÍS
+        # 2. ASIGNACIÓN DE PAÍS (Lógica Actualizada)
         def get_pais(empresa):
-            emp = str(empresa).upper()
-            if 'AFI' in emp or 'PERU' in emp or 'LTCP' in emp: 
-                return 'Perú 🇵🇪'
-            if 'CONIX' in emp or 'GFO' in emp: 
+            emp = str(empresa).upper().strip()
+            
+            # COLOMBIA
+            if emp in ['CONIX', 'GFO']:
                 return 'Colombia 🇨🇴'
+            
+            # PERÚ
+            if emp in ['LTCP', 'LTCP2', 'NCPF', 'NC LEASING PERU']:
+                return 'Perú 🇵🇪'
+            
+            # CHILE (Default para todo lo demás)
+            # AFI, LTC, NC SPA, NC SA, NC LEASING CHILE, IN SA, INCOFIN LEASING
             return 'Chile 🇨🇱'
             
         df['Pais'] = df['empresa'].apply(get_pais)
         
-        # 3. LIMPIEZA DE NULOS (Vital para gráficas)
+        # 3. Limpieza de Nulos y Tipos
         df['Grupo'] = df.get('grupo', pd.Series(['Sin Clasificar']*len(df))).fillna('Sin Clasificar')
         df['Subgrupo'] = df.get('subgrupo', pd.Series(['General']*len(df))).fillna('General')
         df['nombre_tercero'] = df['nombre_tercero'].fillna("Sin Proveedor").replace("", "Sin Proveedor")
@@ -64,14 +81,17 @@ def load_data(start_date, end_date):
         st.error(f"Error de conexión: {e}")
         return pd.DataFrame()
 
+# ==============================================================================
+# RENDERIZADO DEL DASHBOARD
+# ==============================================================================
 def render_dashboard():
     # --- BARRA DE HERRAMIENTAS (FILTROS) ---
     st.markdown('<div class="ns-card">', unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     
     with c1:
-        # Por defecto mostramos todo el año 2025
-        start = st.date_input("Desde", date(2025, 1, 1))
+        # Inicio en 2024 para ver GFO si es necesario, o 2025
+        start = st.date_input("Desde", date(2024, 1, 1))
     with c2:
         end = st.date_input("Hasta", date(2025, 12, 31))
     
@@ -79,7 +99,7 @@ def render_dashboard():
     df_raw = load_data(start, end)
     
     if df_raw.empty:
-        st.warning("⚠️ No hay datos disponibles para este periodo. Revisa si el ETL cargó datos de 2025.")
+        st.warning(f"⚠️ No hay datos entre {start} y {end}.")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
@@ -98,9 +118,11 @@ def render_dashboard():
         empresas_sel = st.multiselect("Empresa", options=empresas_avail, default=empresas_avail)
     
     with c5:
-        st.write("") # Espaciador
+        st.write("") # Espaciador vertical
         st.write("")
-        if st.button("🔄 Refrescar", use_container_width=True):
+        # --- FIX: LIMPIEZA DE CACHÉ ---
+        if st.button("🔄 Refrescar Datos", use_container_width=True):
+            st.cache_data.clear() # Borra la memoria para traer datos frescos (positivos)
             st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -113,7 +135,7 @@ def render_dashboard():
     # --- KPIs ---
     total_usd = df['valor'].sum()
     
-    # Totales estáticos para comparación
+    # Totales estáticos para comparación (usando df_raw sin filtros)
     total_chile = df_raw[df_raw['Pais'].str.contains('Chile')]['valor'].sum()
     total_col = df_raw[df_raw['Pais'].str.contains('Colombia')]['valor'].sum()
     total_peru = df_raw[df_raw['Pais'].str.contains('Perú')]['valor'].sum()
@@ -128,7 +150,7 @@ def render_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-    metric_card("Total Filtrado (USD)", f"${total_usd:,.0f}", k1, LTC_PALETTE[0])
+    metric_card("Total Seleccionado (USD)", f"${total_usd:,.0f}", k1, LTC_PALETTE[0])
     metric_card("Total Chile 🇨🇱", f"${total_chile:,.0f}", k2, LTC_PALETTE[1])
     metric_card("Total Colombia 🇨🇴", f"${total_col:,.0f}", k3, LTC_PALETTE[2])
     metric_card("Total Perú 🇵🇪", f"${total_peru:,.0f}", k4, LTC_PALETTE[3])
@@ -142,7 +164,7 @@ def render_dashboard():
     
     with g_row1_1:
         st.markdown('<div class="ns-card">', unsafe_allow_html=True)
-        # Agrupar por Mes (Texto) para que las barras sean discretas
+        # Agrupar por Mes (Texto YYYY-MM) para barras discretas
         monthly = df.groupby('Mes')['valor'].sum().reset_index().sort_values('Mes')
         
         if not monthly.empty:
@@ -154,12 +176,9 @@ def render_dashboard():
                 text_auto='.2s',
                 color_discrete_sequence=[LTC_PALETTE[0]]
             )
-            fig.update_layout(
-                yaxis_title="USD", 
-                xaxis_title=None, 
-                template="plotly_white",
-                height=350
-            )
+            # Quitamos título del eje X y forzamos layout limpio
+            fig.update_xaxes(title=None, type='category') 
+            fig.update_layout(yaxis_title="USD", template="plotly_white", height=350)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos mensuales para graficar.")
@@ -192,7 +211,6 @@ def render_dashboard():
 
     with g_row2_1:
         st.markdown('<div class="ns-card">', unsafe_allow_html=True)
-        # Treemap de Empresas
         if not df.empty:
             fig_tree = px.treemap(
                 df, 
@@ -208,11 +226,9 @@ def render_dashboard():
 
     with g_row2_2:
         st.markdown('<div class="ns-card">', unsafe_allow_html=True)
-        # Top Proveedores
         if 'nombre_tercero' in df.columns:
-            # Agrupar y ordenar
             top_prov = df.groupby('nombre_tercero')['valor'].sum().reset_index()
-            # Quitamos "Sin Proveedor" si ensucia mucho la gráfica, o lo dejamos
+            # Filtramos vacíos
             top_prov = top_prov[top_prov['nombre_tercero'] != "Sin Proveedor"]
             top_prov = top_prov.sort_values('valor', ascending=True).tail(10)
             
@@ -224,14 +240,9 @@ def render_dashboard():
                     orientation='h',
                     title="<b>Top 10 Proveedores</b>",
                     text_auto='.2s',
-                    color_discrete_sequence=[LTC_PALETTE[1]] # Verde
+                    color_discrete_sequence=[LTC_PALETTE[1]]
                 )
-                fig_prov.update_layout(
-                    yaxis_title=None, 
-                    xaxis_title="Monto (USD)", 
-                    template="plotly_white",
-                    height=400
-                )
+                fig_prov.update_layout(yaxis_title=None, xaxis_title="Monto (USD)", template="plotly_white", height=400)
                 st.plotly_chart(fig_prov, use_container_width=True)
             else:
                 st.info("No hay datos de proveedores para mostrar.")
@@ -242,7 +253,7 @@ def render_dashboard():
     # ==============================================================================
     st.markdown('<div class="ns-card"><h5>📋 Detalle de Transacciones</h5>', unsafe_allow_html=True)
     
-    cols_mostrar = ['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'Fecha_Str']
+    cols_mostrar = ['Pais', 'empresa', 'Grupo', 'Subgrupo', 'nombre_tercero', 'descripcion_gasto', 'valor', 'Fecha Corte']
     cols_validas = [c for c in cols_mostrar if c in df.columns]
 
     st.dataframe(
@@ -251,9 +262,13 @@ def render_dashboard():
         height=300,
         column_config={
             "valor": st.column_config.NumberColumn("Monto", format="$%d"),
-            "Fecha_Str": st.column_config.TextColumn("Fecha"),
+            "Fecha Corte": st.column_config.TextColumn("Fecha Corte"),
             "descripcion_gasto": st.column_config.TextColumn("Descripción", width="large"),
         },
         hide_index=True
     )
+    
+    csv = df[cols_validas].to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Descargar Data (CSV)", data=csv, file_name="opex_report.csv", mime="text/csv")
+    
     st.markdown('</div>', unsafe_allow_html=True)
