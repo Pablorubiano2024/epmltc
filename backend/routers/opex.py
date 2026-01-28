@@ -8,40 +8,23 @@ import joblib
 import os
 import sys
 
-# Importación absoluta desde el paquete backend
+# Importación absoluta
 from backend.database import get_db
 
 router = APIRouter()
 
-# ==============================================================================
-# 1. CARGA DE MODELOS DE INTELIGENCIA ARTIFICIAL
-# ==============================================================================
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) # carpeta routers/
-BACKEND_DIR = os.path.dirname(CURRENT_DIR)               # carpeta backend/
+# --- CARGA MODELOS ---
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 MODEL_DIR = os.path.join(BACKEND_DIR, "ml_models")
 
-print(f"🧠 Buscando modelos en: {MODEL_DIR} ...")
-
 try:
-    path_grupo = os.path.join(MODEL_DIR, "modelo_grupo.pkl")
-    path_subgrupo = os.path.join(MODEL_DIR, "modelo_subgrupo.pkl")
-    
-    if os.path.exists(path_grupo) and os.path.exists(path_subgrupo):
-        model_grupo = joblib.load(path_grupo)
-        model_subgrupo = joblib.load(path_subgrupo)
-        print("✅ Modelos de IA cargados correctamente.")
-    else:
-        print("⚠️ No se encontraron los archivos .pkl. La predicción no funcionará.")
-        model_grupo = None
-        model_subgrupo = None
-except Exception as e:
-    print(f"❌ Error cargando modelos: {e}")
-    model_grupo = None
-    model_subgrupo = None
+    model_grupo = joblib.load(os.path.join(MODEL_DIR, "modelo_grupo.pkl"))
+    model_subgrupo = joblib.load(os.path.join(MODEL_DIR, "modelo_subgrupo.pkl"))
+except:
+    model_grupo, model_subgrupo = None, None
 
-# ==============================================================================
-# 2. ESQUEMAS DE DATOS (Pydantic)
-# ==============================================================================
+# --- ESQUEMAS ---
 class GastoInput(BaseModel):
     id_transaccion: Optional[int] = None
     empresa: str
@@ -52,220 +35,179 @@ class GastoInput(BaseModel):
 
 class UpdateGestion(BaseModel):
     id_transaccion: int
-    # Campos opcionales para permitir actualizaciones parciales
     grupo: Optional[str] = None
     subgrupo: Optional[str] = None
-    status_gestion: Optional[str] = None 
+    status_gestion: Optional[str] = None
 
-# ==============================================================================
-# 3. ENDPOINTS (RUTAS)
-# ==============================================================================
+class UpdateProveedor(BaseModel):
+    nombre_tercero: str
+    status_gestion: Optional[str] = None
+    grupo: Optional[str] = None
+    subgrupo: Optional[str] = None
 
-# --- A. DASHBOARD (RESUMEN MENSUAL POR FECHA DE CORTE) ---
+# --- ENDPOINTS ---
+
+# 1. LISTAS PARA DESPLEGABLES (NUEVO)
+@router.get("/categories")
+def get_unique_categories(db: Session = Depends(get_db)):
+    """Devuelve listas únicas de Grupos y Subgrupos para los selectbox del frontend"""
+    try:
+        # Obtenemos grupos únicos
+        res_g = db.execute(text("SELECT DISTINCT grupo FROM control_gestion.libros_diarios_consolidados WHERE grupo IS NOT NULL ORDER BY grupo")).fetchall()
+        grupos = [r[0] for r in res_g if r[0]]
+
+        # Obtenemos subgrupos únicos
+        res_s = db.execute(text("SELECT DISTINCT subgrupo FROM control_gestion.libros_diarios_consolidados WHERE subgrupo IS NOT NULL ORDER BY subgrupo")).fetchall()
+        subgrupos = [r[0] for r in res_s if r[0]]
+
+        return {"grupos": grupos, "subgrupos": subgrupos}
+    except Exception as e:
+        print(f"❌ Error categories: {e}")
+        return {"grupos": [], "subgrupos": []}
+
+# 2. DASHBOARD
 @router.get("/summary")
 def get_opex_summary(year: int = 2025, db: Session = Depends(get_db)):
-    """
-    Obtiene el total de gastos agrupado por Empresa y Mes de Corte.
-    """
     try:
         sql = text("""
-            SELECT 
-                empresa,
-                TO_CHAR(CAST(fecha_corte AS DATE), 'YYYY-MM') as periodo,
-                SUM(valor) as total
+            SELECT empresa, TO_CHAR(CAST(fecha_corte AS DATE), 'YYYY-MM'), SUM(valor)
             FROM control_gestion.libros_diarios_consolidados
             WHERE EXTRACT(YEAR FROM CAST(fecha_corte AS DATE)) = :year
-              AND (
-                  cuenta_contable LIKE '31%' OR 
-                  cuenta_contable LIKE '32%' OR 
-                  cuenta_contable LIKE '42%' OR 
-                  cuenta_contable LIKE '5%'
-              )
+              AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%' OR cuenta_contable LIKE '5%')
             GROUP BY empresa, TO_CHAR(CAST(fecha_corte AS DATE), 'YYYY-MM')
-            ORDER BY periodo, empresa
+            ORDER BY 2, 1
         """)
-        
         result = db.execute(sql, {"year": year}).fetchall()
-        
-        return [
-            {"empresa": row[0], "periodo": row[1], "total": float(row[2])}
-            for row in result
-        ]
+        return [{"empresa": r[0], "periodo": r[1], "total": float(r[2])} for r in result]
     except Exception as e:
-        print(f"❌ Error en SQL Summary: {e}")
-        raise HTTPException(status_code=500, detail=f"Error consultando base de datos: {str(e)}")
+        raise HTTPException(500, str(e))
 
-# --- B. EXPLORADOR DE DATOS Y DASHBOARD DETALLADO ---
+# 3. TRANSACCIONES
 @router.get("/transactions")
-def get_transactions(
-    start_date: str, 
-    end_date: str, 
-    empresas: str, # Recibe string "AFI,CONIX,GFO"
-    cuenta: Optional[str] = None,
-    limit: int = 0, # 0 = Sin límite
-    db: Session = Depends(get_db)
-):
+def get_transactions(start_date: str, end_date: str, empresas: str, cuenta: Optional[str]=None, proveedor: Optional[str]=None, limit: int=0, db: Session = Depends(get_db)):
     try:
-        empresa_list = empresas.split(",")
-        
-        # Consulta completa incluyendo status y clasificaciones
-        sql_query = """
-            SELECT 
-                id_transaccion,
-                empresa,
-                fecha_corte,
-                fecha_transaccion,
-                cuenta_contable,
-                id_proveedor,
-                nombre_tercero,
-                descripcion_gasto,
-                valor,
-                COALESCE(grupo, 'Sin Clasificar') as grupo,
-                COALESCE(subgrupo, 'General') as subgrupo,
-                COALESCE(status_gestion, 'Pendiente') as status_gestion
+        emp_list = empresas.split(",")
+        sql = """
+            SELECT id_transaccion, empresa, fecha_corte, fecha_transaccion, cuenta_contable, id_proveedor, nombre_tercero, descripcion_gasto, valor,
+            COALESCE(grupo, 'Sin Clasificar') as grupo,
+            COALESCE(subgrupo, 'General') as subgrupo,
+            COALESCE(status_gestion, 'Pendiente') as status_gestion,
+            COALESCE(clasificacion_manual, FALSE) as clasificacion_manual
             FROM control_gestion.libros_diarios_consolidados
             WHERE CAST(fecha_corte AS DATE) BETWEEN :start AND :end
             AND empresa = ANY(:emp_list)
         """
-        params = {"start": start_date, "end": end_date, "emp_list": empresa_list}
+        params = {"start": start_date, "end": end_date, "emp_list": emp_list}
         
-        # Filtros de Cuenta
         if cuenta:
-            sql_query += " AND cuenta_contable LIKE :cta"
+            sql += " AND cuenta_contable LIKE :cta"
             params["cta"] = f"{cuenta}%"
         else:
-            # Filtro OPEX General
-            sql_query += """ AND (
-                cuenta_contable LIKE '31%' OR 
-                cuenta_contable LIKE '32%' OR 
-                cuenta_contable LIKE '42%' OR 
-                cuenta_contable LIKE '5%'
-            )"""
-            
-        sql_query += " ORDER BY fecha_corte DESC, valor DESC"
-        
-        # Límite opcional
-        if limit > 0:
-            sql_query += f" LIMIT {limit}"
-            
-        result = db.execute(text(sql_query), params).fetchall()
-        
-        return [dict(row._mapping) for row in result]
-        
-    except Exception as e:
-        print(f"❌ Error en Transacciones: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            if not proveedor:
+                sql += " AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%' OR cuenta_contable LIKE '5%')"
 
-# --- C. PENDIENTES DE CLASIFICACIÓN ---
+        if proveedor:
+            sql += " AND nombre_tercero ILIKE :prov"
+            params["prov"] = f"%{proveedor}%"
+
+        sql += " ORDER BY fecha_corte DESC, valor DESC"
+        if limit > 0: sql += f" LIMIT {limit}"
+            
+        res = db.execute(text(sql), params).fetchall()
+        return [dict(row._mapping) for row in res]
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# 4. PENDIENTES
 @router.get("/pending-classification")
-def get_pending_classification(limit: int = 50, db: Session = Depends(get_db)):
-    """
-    Trae gastos OPEX que tienen Grupo vacío para ser clasificados por la IA.
-    """
+def get_pending(limit: int = 50, db: Session = Depends(get_db)):
     try:
         sql = text("""
             SELECT * FROM control_gestion.libros_diarios_consolidados
             WHERE (grupo IS NULL OR grupo = '')
-            AND (
-                cuenta_contable LIKE '31%' OR 
-                cuenta_contable LIKE '32%' OR 
-                cuenta_contable LIKE '42%' OR 
-                cuenta_contable LIKE '5%'
-            )
-            ORDER BY fecha_corte DESC
-            LIMIT :limit
+            AND (clasificacion_manual IS FALSE OR clasificacion_manual IS NULL)
+            AND (cuenta_contable LIKE '31%' OR cuenta_contable LIKE '32%' OR cuenta_contable LIKE '42%' OR cuenta_contable LIKE '5%')
+            ORDER BY fecha_corte DESC LIMIT :limit
         """)
-        result = db.execute(sql, {"limit": limit}).fetchall()
-        return [dict(row._mapping) for row in result]
+        res = db.execute(sql, {"limit": limit}).fetchall()
+        return [dict(row._mapping) for row in res]
     except Exception as e:
-        print(f"❌ Error obteniendo pendientes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
-# --- D. PREDICCIÓN (MACHINE LEARNING) ---
+# 5. PREDICT
 @router.post("/predict")
-def predict_gastos(gastos: List[GastoInput]):
-    """
-    Recibe una lista de gastos, aplica los modelos Random Forest y devuelve clasificación.
-    """
-    if not model_grupo or not model_subgrupo:
-        raise HTTPException(status_code=500, detail="Los modelos de IA no están cargados en el servidor.")
-
+def predict(gastos: List[GastoInput]):
+    if not model_grupo: raise HTTPException(500, "Modelos no cargados")
     try:
-        # Convertir input a DataFrame
         data = [g.dict() for g in gastos]
         df = pd.DataFrame(data)
+        df['txt'] = (df['cuenta_contable'].astype(str)+" "+df['id_proveedor'].fillna('').astype(str)+" "+df['descripcion_gasto'].fillna('').astype(str)).str.lower()
         
-        # Preprocesamiento idéntico al entrenamiento
-        df['TEXTO_COMBINADO'] = (
-            df['cuenta_contable'].astype(str) + " " +
-            df['id_proveedor'].fillna('').astype(str) + " " +
-            df['descripcion_gasto'].fillna('').astype(str)
-        ).str.lower()
+        grupos = model_grupo.predict(df['txt'])
+        probs = model_grupo.predict_proba(df['txt'])
+        subs = model_subgrupo.predict(df['txt'])
         
-        # Predicción Grupo
-        grupos = model_grupo.predict(df['TEXTO_COMBINADO'])
-        probs_g = model_grupo.predict_proba(df['TEXTO_COMBINADO'])
-        
-        # Predicción Subgrupo
-        subgrupos = model_subgrupo.predict(df['TEXTO_COMBINADO'])
-        
-        # Armar respuesta
-        response = []
+        resp = []
         for i, row in df.iterrows():
-            confianza = max(probs_g[i]) * 100
-            response.append({
-                **data[i],
-                "grupo_predicho": grupos[i],
-                "subgrupo_predicho": subgrupos[i],
-                "confianza": round(confianza, 1)
-            })
-            
-        return response
+            resp.append({**data[i], "grupo_predicho": grupos[i], "subgrupo_predicho": subs[i], "confianza": round(max(probs[i])*100, 1)})
+        return resp
+    except Exception as e: raise HTTPException(500, str(e))
 
-    except Exception as e:
-        print(f"❌ Error en predicción: {e}")
-        raise HTTPException(status_code=500, detail=f"Error en motor de IA: {str(e)}")
-
-# --- E. ACTUALIZACIÓN DINÁMICA (CLASIFICACIÓN + STATUS) ---
+# 6. UPDATE BATCH (ID)
 @router.put("/update-batch")
-def update_batch_gestion(updates: List[UpdateGestion], db: Session = Depends(get_db)):
-    """
-    Actualiza Clasificación (Grupo/Subgrupo) y/o Status de Gestión.
-    Construye la query dinámicamente según qué campos vengan llenos.
-    """
+def update_batch(updates: List[UpdateGestion], db: Session = Depends(get_db)):
     try:
-        count = 0
-        for item in updates:
-            # Construcción dinámica del UPDATE
+        cnt = 0
+        for i in updates:
             clauses = []
-            params = {"id": item.id_transaccion}
+            p = {"id": i.id_transaccion}
+            if i.grupo: clauses.append("grupo = :g"); p["g"] = i.grupo
+            if i.subgrupo: clauses.append("subgrupo = :s"); p["s"] = i.subgrupo
+            if i.status_gestion: clauses.append("status_gestion = :st"); p["st"] = i.status_gestion
             
-            if item.grupo is not None:
-                clauses.append("grupo = :g")
-                params["g"] = item.grupo
-                
-            if item.subgrupo is not None:
-                clauses.append("subgrupo = :s")
-                params["s"] = item.subgrupo
-                
-            if item.status_gestion is not None:
+            if clauses:
+                db.execute(text(f"UPDATE control_gestion.libros_diarios_consolidados SET {', '.join(clauses)} WHERE id_transaccion = :id"), p)
+                cnt += 1
+        db.commit()
+        return {"status": "success", "updated_rows": cnt}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, str(e))
+
+# 7. UPDATE PROVEEDOR (MASIVO + FIX MANUAL)
+@router.put("/update-provider-status")
+def update_provider_status(updates: List[UpdateProveedor], db: Session = Depends(get_db)):
+    try:
+        cnt = 0
+        print(f"🔄 Actualizando {len(updates)} proveedores...")
+        for i in updates:
+            clauses = []
+            p = {"prov": i.nombre_tercero}
+            
+            if i.status_gestion:
                 clauses.append("status_gestion = :st")
-                params["st"] = item.status_gestion
+                p["st"] = i.status_gestion
             
-            # Ejecutar solo si hay algo que actualizar
+            # Si se envía grupo/subgrupo, se marca como MANUAL
+            if i.grupo or i.subgrupo:
+                if i.grupo: clauses.append("grupo = :g"); p["g"] = i.grupo
+                if i.subgrupo: clauses.append("subgrupo = :s"); p["s"] = i.subgrupo
+                # LA CLAVE: Forzar la bandera manual
+                clauses.append("clasificacion_manual = TRUE")
+
             if clauses:
                 sql = text(f"""
                     UPDATE control_gestion.libros_diarios_consolidados
                     SET {", ".join(clauses)}
-                    WHERE id_transaccion = :id
+                    WHERE nombre_tercero = :prov
                 """)
-                db.execute(sql, params)
-                count += 1
-            
+                res = db.execute(sql, p)
+                cnt += res.rowcount
+                print(f"   -> Proveedor {i.nombre_tercero}: {res.rowcount} filas")
+
         db.commit()
-        return {"status": "success", "updated_rows": count}
-        
+        return {"status": "success", "updated_rows": cnt}
     except Exception as e:
         db.rollback()
-        print(f"❌ Error DB Update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error Update Provider: {e}")
+        raise HTTPException(500, str(e))
