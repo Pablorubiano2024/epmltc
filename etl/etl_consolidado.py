@@ -17,7 +17,7 @@ if not os.environ.get("OPENSSL_CONF"):
         f.write("openssl_conf = openssl_init\n[openssl_init]\nssl_conf = ssl_sect\n[ssl_sect]\nsystem_default = system_default_sect\n[system_default_sect]\nCipherString = DEFAULT:@SECLEVEL=0")
     os.environ["OPENSSL_CONF"] = ssl_conf_path
 
-print("🚀 INICIANDO ETL OPEX 2025 (CONIX SIGNO INVERTIDO)...")
+print("🚀 INICIANDO ETL OPEX (FULL LOAD + ESTRUCTURA COMPLETA)...")
 
 # ==============================================================================
 # 1. CARGA DE VARIABLES DE ENTORNO
@@ -75,13 +75,13 @@ except Exception as e:
 # Filtro Genérico PostgreSQL (Para todo menos GFO)
 def get_pg_filter_general(col_fecha, col_cuenta):
     return f"""
-    AND {col_fecha}::date >= '2025-01-01' 
+    AND {col_fecha}::date >= '2024-01-01' 
     AND ({col_cuenta}::text LIKE '31%%' OR {col_cuenta}::text LIKE '32%%' OR {col_cuenta}::text LIKE '42%%')
     """
 
 # Filtro Genérico SQL Server (Para todo menos Leasing)
 FILTER_SQL_SRV_GENERAL = """
-AND DC.Com_Periodo >= '202501'
+AND DC.Com_Periodo >= '202401'
 AND (DC.Cta_Codigo LIKE '31%' OR DC.Cta_Codigo LIKE '32%' OR DC.Cta_Codigo LIKE '42%')
 """
 
@@ -94,20 +94,7 @@ excepciones_gfo = "('52991005', '53050503', '53051505', '53052005', '53052015')"
 
 # --- A. PostgreSQL (Histórico) ---
 q_pg = {
-    # --- CAMBIO AQUI: CONIX con signo invertido ---
-    'CONIX': f"""
-        SELECT 'CONIX' as empresa, 
-               fecha_corte, 
-               d_fecha_documento::text as fecha_transaccion, 
-               k_sc_codigo_cuenta as cuenta_contable, 
-               n_nit as id_proveedor, 
-               sc_nombre as nombre_tercero, 
-               CONCAT_WS(' ', sc_nombre_cuenta, sv_observaciones, sc_nombre_centro_costo) as descripcion_gasto, 
-               (n_valor * -1) as valor -- INVIRTIR SIGNO: Gasto (-) pasa a (+)
-        FROM control_gestion.libros_diarios_conix 
-        WHERE 1=1 {get_pg_filter_general('d_fecha_documento', 'k_sc_codigo_cuenta')}
-    """,
-    
+    # GFO: Lógica Débito/Crédito + Cuentas 5 + Excepciones
     'GFO': f"""
         SELECT 'GFO' as empresa, 
                fecha_corte, 
@@ -118,8 +105,8 @@ q_pg = {
                CONCAT_WS(' ', detalle, c_o_descripcion, cuenta_descripcion, c_costo_descripcion) as descripcion_gasto, 
                CAST(
                    CASE 
-                       WHEN d_c = 'D' THEN valor_l1 
-                       WHEN d_c = 'C' THEN -valor_l1 
+                       WHEN d_c = 'D' THEN valor_l2 
+                       WHEN d_c = 'C' THEN -valor_l2 
                        ELSE 0 
                    END 
                AS NUMERIC) as valor 
@@ -129,30 +116,44 @@ q_pg = {
           AND cuenta::text LIKE '5%%'
           AND cuenta::text NOT IN {excepciones_gfo}
     """,
+
+    # CONIX: Signo Invertido
+    'CONIX': f"""
+        SELECT 'CONIX' as empresa, 
+               fecha_corte, 
+               d_fecha_documento::text as fecha_transaccion, 
+               k_sc_codigo_cuenta as cuenta_contable, 
+               n_nit as id_proveedor, 
+               sc_nombre as nombre_tercero, 
+               CONCAT_WS(' ', sc_nombre_cuenta, sv_observaciones, sc_nombre_centro_costo) as descripcion_gasto, 
+               (n_valor * -1) as valor 
+        FROM control_gestion.libros_diarios_conix 
+        WHERE 1=1 {get_pg_filter_general('d_fecha_documento', 'k_sc_codigo_cuenta')}
+    """,
     
     'LTCP': f"""SELECT 'LTCP' as empresa, fecha_corte, "FEC DOC"::text as fecha_transaccion, "CUENTA" as cuenta_contable, "ANEXO" as id_proveedor, NULL as nombre_tercero, CONCAT_WS(' ', "CONCEPTO", "C COSTO") as descripcion_gasto, (COALESCE("DEBE  - MN", 0) - COALESCE("HABER - MN", 0)) as valor FROM control_gestion.libros_diarios_ltcp WHERE 1=1 {get_pg_filter_general('"FEC DOC"', '"CUENTA"')}""",
-    
     'LTCP2': f"""SELECT 'LTCP2' as empresa, fecha_corte, "FEC DOC"::text as fecha_transaccion, "CUENTA" as cuenta_contable, "ANEXO" as id_proveedor, NULL as nombre_tercero, CONCAT_WS(' ', "CONCEPTO", "C COSTO") as descripcion_gasto, (COALESCE("DEBE  - MN", 0) - COALESCE("HABER - MN", 0)) as valor FROM control_gestion.libros_diarios_ltcp2 WHERE 1=1 {get_pg_filter_general('"FEC DOC"', '"CUENTA"')}""",
-    
     'NCPF': f"""SELECT 'NCPF' as empresa, fecha_corte, "FEC DOC"::text as fecha_transaccion, "CUENTA" as cuenta_contable, "ANEXO" as id_proveedor, NULL as nombre_tercero, CONCAT_WS(' ', "CONCEPTO", "C COSTO") as descripcion_gasto, (COALESCE("DEBE  - MN", 0) - COALESCE("HABER - MN", 0)) as valor FROM control_gestion.libros_diarios_ncpf WHERE 1=1 {get_pg_filter_general('"FEC DOC"', '"CUENTA"')}""",
-    
     'NC LEASING PERU': f"""SELECT 'NC LEASING PERU' as empresa, fecha_corte, "fec_doc"::text as fecha_transaccion, "cuenta" as cuenta_contable, "anexo" as id_proveedor, NULL as nombre_tercero, CONCAT_WS(' ', "concepto", "centro_costo") as descripcion_gasto, (COALESCE("debe_mn", 0) - COALESCE("haber_mn", 0)) as valor FROM control_gestion.libros_diarios_nc_leasing WHERE 1=1 {get_pg_filter_general('"fec_doc"', 'cuenta')}"""
 }
 
-# --- B. SQL Server (Histórico desde 2024) ---
+# --- B. SQL Server ---
+f_afi = "CAST(LEFT(DC.Com_Periodo, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE)"
+sql_afi = f"""SELECT 'AFI' as empresa, CONVERT(VARCHAR(10), {f_afi}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM dbo.Detalle_Comprobante DC LEFT JOIN dbo.Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN dbo.Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN dbo.Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo WHERE DC.Com_Numero IS NOT NULL {FILTER_SQL_SRV_GENERAL}"""
 
-sql_afi = f"""SELECT 'AFI' as empresa, CONVERT(VARCHAR(10), CAST(LEFT(DC.Com_Periodo, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM dbo.Detalle_Comprobante DC LEFT JOIN dbo.Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN dbo.Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN dbo.Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo WHERE DC.Com_Numero IS NOT NULL {FILTER_SQL_SRV_GENERAL}"""
+sql_ltc = f"""SELECT 'LTC' as empresa, CONVERT(VARCHAR(10), {f_afi}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM dbo.Detalle_Comprobante DC LEFT JOIN dbo.Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN dbo.Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN dbo.Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo WHERE DC.Com_Numero IS NOT NULL {FILTER_SQL_SRV_GENERAL}"""
 
-sql_ltc = f"""SELECT 'LTC' as empresa, CONVERT(VARCHAR(10), CAST(LEFT(DC.Com_Periodo, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM dbo.Detalle_Comprobante DC LEFT JOIN dbo.Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN dbo.Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN dbo.Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo WHERE DC.Com_Numero IS NOT NULL {FILTER_SQL_SRV_GENERAL}"""
+f_nc = "CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE)"
+sql_nc_spa = f"""SELECT 'NC SPA' as empresa, CONVERT(VARCHAR(10), {f_nc}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
 
-sql_nc_spa = f"""SELECT 'NC SPA' as empresa, CONVERT(VARCHAR(10), CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
+sql_nc_l = f"""SELECT 'NC LEASING CHILE' as empresa, CONVERT(VARCHAR(10), {f_nc}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
 
-sql_nc_l = f"""SELECT 'NC LEASING CHILE' as empresa, CONVERT(VARCHAR(10), CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
+sql_nc_sa = f"""SELECT 'NC SA' as empresa, CONVERT(VARCHAR(10), {f_nc}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
 
-sql_nc_sa = f"""SELECT 'NC SA' as empresa, CONVERT(VARCHAR(10), CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
+f_insa = "CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE)"
+sql_in_sa = f"""SELECT 'IN SA' as empresa, CONVERT(VARCHAR(10), {f_insa}, 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
 
-sql_in_sa = f"""SELECT 'IN SA' as empresa, CONVERT(VARCHAR(10), CAST(SUBSTRING(DC.Com_Periodo, 1, 4) + '-' + SUBSTRING(DC.Com_Periodo, 5, 2) + '-01' AS DATE), 23) as fecha_transaccion, DC.Cta_Codigo as cuenta_contable, DC.Cli_Rut as id_proveedor, CLI.Cli_Nombre as nombre_tercero, ISNULL(DC.Dco_Glosa,'') + ' ' + ISNULL(CDC.Cdc_glosa,'') + ' ' + ISNULL(CTA.Cta_Glosa,'') as descripcion_gasto, (CASE WHEN DC.Dco_TipoDH = 'D' THEN DC.Dco_Valor ELSE 0 END - CASE WHEN DC.Dco_TipoDH = 'H' THEN DC.Dco_Valor ELSE 0 END) as valor FROM Detalle_Comprobante DC LEFT JOIN Cliente CLI ON DC.Cli_Rut = CLI.Cli_Rut LEFT JOIN Cuenta CTA ON DC.Cta_Codigo = CTA.Cta_Codigo LEFT JOIN Centro_de_Costo CDC ON DC.Cdc_Codigo = CDC.Cdc_Codigo LEFT JOIN Comprobante C ON DC.Com_Numero = C.Com_Numero AND DC.Com_Periodo = C.Com_Periodo WHERE C.Com_Estado <> 'A' {FILTER_SQL_SRV_GENERAL}"""
-
+# INCOFIN LEASING (SIN FILTRO DE CUENTAS, TRAE TODO PARA EVITAR ERRORES, LUEGO SE FILTRA EN DASHBOARD)
 sql_in_l = """
 SELECT 'INCOFIN LEASING' as empresa, 
        CONVERT(VARCHAR(10), CAST(c.fecha_comp AS DATE), 23) as fecha_transaccion, 
@@ -164,7 +165,7 @@ SELECT 'INCOFIN LEASING' as empresa,
 FROM dbo.t_comprobante_detalle cd 
 INNER JOIN dbo.t_comprobante c ON cd.num_comp = c.num_comp 
 LEFT JOIN dbo.t_cuentas cu ON cd.cod_cuenta = cu.cod_cuenta 
-WHERE c.fecha_comp >= '2025-01-01'
+WHERE c.fecha_comp >= '2024-01-01'
   AND (cd.cod_cuenta LIKE '31%' OR cd.cod_cuenta LIKE '32%' OR cd.cod_cuenta LIKE '42%')
 """
 
@@ -247,14 +248,15 @@ try:
 except: pass
 
 # ==============================================================================
-# 6. ESTRUCTURA FINAL (IA)
+# 6. ESTRUCTURA FINAL (COLUMNAS DE IA Y GESTIÓN)
 # ==============================================================================
-print("🔨 Ajustando estructura para IA...")
+print("🔨 Ajustando estructura final...")
 try:
     with engine_pg.connect() as conn:
         conn.execute(text(f'ALTER TABLE "{SCHEMA_DEST}"."{TABLA_DEST}" ADD COLUMN IF NOT EXISTS id_transaccion SERIAL PRIMARY KEY'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA_DEST}"."{TABLA_DEST}" ADD COLUMN IF NOT EXISTS grupo TEXT'))
         conn.execute(text(f'ALTER TABLE "{SCHEMA_DEST}"."{TABLA_DEST}" ADD COLUMN IF NOT EXISTS subgrupo TEXT'))
+        conn.execute(text(f'ALTER TABLE "{SCHEMA_DEST}"."{TABLA_DEST}" ADD COLUMN IF NOT EXISTS status_gestion VARCHAR(50) DEFAULT \'Pendiente\''))
         conn.commit()
     print("✅ Estructura lista.")
 except Exception as e:

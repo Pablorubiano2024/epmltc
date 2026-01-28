@@ -50,10 +50,12 @@ class GastoInput(BaseModel):
     id_proveedor: Optional[str] = ""
     nombre_tercero: Optional[str] = ""
 
-class UpdateClasificacion(BaseModel):
+class UpdateGestion(BaseModel):
     id_transaccion: int
-    grupo: str
-    subgrupo: str
+    # Campos opcionales para permitir actualizaciones parciales
+    grupo: Optional[str] = None
+    subgrupo: Optional[str] = None
+    status_gestion: Optional[str] = None 
 
 # ==============================================================================
 # 3. ENDPOINTS (RUTAS)
@@ -93,33 +95,46 @@ def get_opex_summary(year: int = 2025, db: Session = Depends(get_db)):
         print(f"❌ Error en SQL Summary: {e}")
         raise HTTPException(status_code=500, detail=f"Error consultando base de datos: {str(e)}")
 
-# --- B. EXPLORADOR DE DATOS (FILTROS) ---
+# --- B. EXPLORADOR DE DATOS Y DASHBOARD DETALLADO ---
 @router.get("/transactions")
 def get_transactions(
     start_date: str, 
     end_date: str, 
     empresas: str, # Recibe string "AFI,CONIX,GFO"
     cuenta: Optional[str] = None,
-    limit: int = 0, # Parámetro nuevo: 0 = Sin límite (traer todo)
+    limit: int = 0, # 0 = Sin límite
     db: Session = Depends(get_db)
 ):
     try:
         empresa_list = empresas.split(",")
         
-        # Base de la consulta
+        # Consulta completa incluyendo status y clasificaciones
         sql_query = """
-            SELECT * FROM control_gestion.libros_diarios_consolidados
+            SELECT 
+                id_transaccion,
+                empresa,
+                fecha_corte,
+                fecha_transaccion,
+                cuenta_contable,
+                id_proveedor,
+                nombre_tercero,
+                descripcion_gasto,
+                valor,
+                COALESCE(grupo, 'Sin Clasificar') as grupo,
+                COALESCE(subgrupo, 'General') as subgrupo,
+                COALESCE(status_gestion, 'Pendiente') as status_gestion
+            FROM control_gestion.libros_diarios_consolidados
             WHERE CAST(fecha_corte AS DATE) BETWEEN :start AND :end
             AND empresa = ANY(:emp_list)
         """
         params = {"start": start_date, "end": end_date, "emp_list": empresa_list}
         
-        # Filtro opcional por cuenta
+        # Filtros de Cuenta
         if cuenta:
             sql_query += " AND cuenta_contable LIKE :cta"
             params["cta"] = f"{cuenta}%"
         else:
-            # Filtro OPEX General (Incluyendo clase 5 para GFO)
+            # Filtro OPEX General
             sql_query += """ AND (
                 cuenta_contable LIKE '31%' OR 
                 cuenta_contable LIKE '32%' OR 
@@ -127,15 +142,14 @@ def get_transactions(
                 cuenta_contable LIKE '5%'
             )"""
             
-        sql_query += " ORDER BY fecha_corte DESC"
+        sql_query += " ORDER BY fecha_corte DESC, valor DESC"
         
-        # LÓGICA DE LÍMITE
+        # Límite opcional
         if limit > 0:
             sql_query += f" LIMIT {limit}"
             
         result = db.execute(text(sql_query), params).fetchall()
         
-        # Convertir a lista de diccionarios
         return [dict(row._mapping) for row in result]
         
     except Exception as e:
@@ -212,25 +226,45 @@ def predict_gastos(gastos: List[GastoInput]):
         print(f"❌ Error en predicción: {e}")
         raise HTTPException(status_code=500, detail=f"Error en motor de IA: {str(e)}")
 
-# --- E. GUARDAR CAMBIOS ---
+# --- E. ACTUALIZACIÓN DINÁMICA (CLASIFICACIÓN + STATUS) ---
 @router.put("/update-batch")
-def update_batch_classification(updates: List[UpdateClasificacion], db: Session = Depends(get_db)):
+def update_batch_gestion(updates: List[UpdateGestion], db: Session = Depends(get_db)):
     """
-    Actualiza el Grupo y Subgrupo de transacciones específicas por su ID.
+    Actualiza Clasificación (Grupo/Subgrupo) y/o Status de Gestión.
+    Construye la query dinámicamente según qué campos vengan llenos.
     """
     try:
         count = 0
         for item in updates:
-            sql = text("""
-                UPDATE control_gestion.libros_diarios_consolidados
-                SET grupo = :g, subgrupo = :s
-                WHERE id_transaccion = :id
-            """)
-            db.execute(sql, {"g": item.grupo, "s": item.subgrupo, "id": item.id_transaccion})
-            count += 1
+            # Construcción dinámica del UPDATE
+            clauses = []
+            params = {"id": item.id_transaccion}
+            
+            if item.grupo is not None:
+                clauses.append("grupo = :g")
+                params["g"] = item.grupo
+                
+            if item.subgrupo is not None:
+                clauses.append("subgrupo = :s")
+                params["s"] = item.subgrupo
+                
+            if item.status_gestion is not None:
+                clauses.append("status_gestion = :st")
+                params["st"] = item.status_gestion
+            
+            # Ejecutar solo si hay algo que actualizar
+            if clauses:
+                sql = text(f"""
+                    UPDATE control_gestion.libros_diarios_consolidados
+                    SET {", ".join(clauses)}
+                    WHERE id_transaccion = :id
+                """)
+                db.execute(sql, params)
+                count += 1
             
         db.commit()
         return {"status": "success", "updated_rows": count}
+        
     except Exception as e:
         db.rollback()
         print(f"❌ Error DB Update: {e}")
