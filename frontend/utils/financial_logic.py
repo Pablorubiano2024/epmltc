@@ -1,137 +1,202 @@
 import pandas as pd
 import numpy as np
 import numpy_financial as npf
-import plotly.graph_objs as go
 
-# --- CONFIGURACIÓN DE COLORES ---
-PRIMARY = "#122442"
-SECONDARY = "#19AC86"
-ACCENT = "#FE4A49"
-WHITE = "#FFFFFF"
-DARK = "#232323"
-LIGHT_BLUE = "#A2E3EB"
-
-def run_financial_model(plazo, fiu_perf_inicial, fiu_npa_inicial, monto_deuda, interes_prestamo, loan_type, revenue_rate, cof_rate, provision_rate, rec_npa, opex_pct, tax_rate):
-    revenue_rate_mensual = revenue_rate / 100 / 12
-    cof_rate_mensual = cof_rate / 100 / 12
-    provision_rate_mensual = provision_rate / 100 / 12
-    interes_prestamo_mensual = (interes_prestamo / 100) / 12
-    rec_npa_mensual = (1 - (1 - rec_npa / 100)**(1/12)) if rec_npa < 100 else 1.0
-    opex_pct_dec = opex_pct / 100
-    tax_rate_dec = tax_rate / 100
+def calculate_debt_schedule(monto, tasa_anual, plazo_anos):
+    """Calcula la tabla de amortización (Intereses) para una deuda específica."""
+    if monto <= 0 or plazo_anos <= 0:
+        return np.zeros(120) # Retorna ceros para 10 años por seguridad
     
-    total_meses = int(plazo * 12)
-    start_date = pd.to_datetime('today').to_period('M').start_time
-    meses_idx = pd.date_range(start=start_date, periods=total_meses, freq='ME') # ME = Month End (pandas nuevo)
-    df = pd.DataFrame(index=meses_idx)
-
-    cols = ['fiu_performing_inicio', 'fiu_npa_inicio', 'ingresos', 'cof', 'provisiones', 'utilidad_bruta', 'opex', 'ebitda', 'interes_prestamo', 'amortizacion_prestamo', 'recuperacion_npa', 'ebt', 'impuestos', 'utilidad_neta', 'flujo_caja_equity', 'fiu_performing_fin']
-    for col in cols: df[col] = 0.0
+    tasa_mensual = (tasa_anual / 100) / 12
+    n_periodos = int(plazo_anos * 12)
     
-    saldo_prestamo_actual = monto_deuda
-    fiu_perf_actual = fiu_perf_inicial
-    fiu_npa_actual = fiu_npa_inicial
-    cuota_mensual = 0
+    try:
+        cuota = npf.pmt(tasa_mensual, n_periodos, -monto)
+    except:
+        cuota = 0
     
-    if loan_type == 'Amortizado' and monto_deuda > 0 and total_meses > 0:
-        if interes_prestamo_mensual > 0:
-            cuota_mensual = npf.pmt(interes_prestamo_mensual, total_meses, -monto_deuda)
-        else:
-            cuota_mensual = monto_deuda / total_meses
-
-    for i, mes_actual in enumerate(df.index):
-        df.loc[mes_actual, 'fiu_performing_inicio'] = fiu_perf_actual
-        df.loc[mes_actual, 'fiu_npa_inicio'] = fiu_npa_actual
+    intereses = []
+    saldo = monto
+    
+    # Generamos proyección hasta 120 meses (10 años)
+    for _ in range(120): 
+        if saldo <= 0.01:
+            intereses.append(0)
+            continue
+            
+        interes = saldo * tasa_mensual
+        amort = cuota - interes
+        if saldo - amort < 0: amort = saldo
+            
+        intereses.append(interes)
+        saldo -= amort
         
-        ingresos_mes = fiu_perf_actual * revenue_rate_mensual
-        cof_mes = fiu_perf_actual * cof_rate_mensual
-        provisiones_mes = (fiu_perf_actual + fiu_npa_actual) * provision_rate_mensual
-        utilidad_bruta_mes = ingresos_mes - cof_mes - provisiones_mes
-        opex_mes = ingresos_mes * opex_pct_dec
-        ebitda_mes = utilidad_bruta_mes - opex_mes
-        interes_mes = saldo_prestamo_actual * interes_prestamo_mensual
-        ebt_mes = ebitda_mes - interes_mes
-        impuestos_mes = max(0, ebt_mes * tax_rate_dec)
-        utilidad_neta_mes = ebt_mes - impuestos_mes
-        recuperacion_npa_mes = fiu_npa_actual * rec_npa_mensual
+    return np.array(intereses)
 
-        amortizacion_mes = 0
-        if saldo_prestamo_actual > 0.001:
-            if loan_type == 'Bullet':
-                if i == total_meses - 1: amortizacion_mes = saldo_prestamo_actual
-            else:
-                pago_principal = cuota_mensual - interes_mes
-                amortizacion_mes = min(saldo_prestamo_actual, max(0, pago_principal))
-        
-        caja_generada_operacion = ebitda_mes - impuestos_mes
-        caja_total_disponible = caja_generada_operacion + recuperacion_npa_mes
-        flujo_caja_libre_equity = caja_total_disponible - interes_mes - amortizacion_mes
-        
-        df.loc[mes_actual, ['ingresos', 'cof', 'provisiones', 'utilidad_bruta', 'opex', 'ebitda', 'interes_prestamo', 'amortizacion_prestamo', 'recuperacion_npa', 'ebt', 'impuestos', 'utilidad_neta', 'flujo_caja_equity']] = \
-            [ingresos_mes, cof_mes, provisiones_mes, utilidad_bruta_mes, opex_mes, ebitda_mes, interes_mes, amortizacion_mes, recuperacion_npa_mes, ebt_mes, impuestos_mes, utilidad_neta_mes, flujo_caja_libre_equity]
-        
-        saldo_prestamo_actual -= amortizacion_mes
-        fiu_perf_actual += flujo_caja_libre_equity
-        fiu_npa_actual *= (1 - rec_npa_mensual)
-        
-        df.loc[mes_actual, 'fiu_performing_fin'] = fiu_perf_actual
+def run_financial_model(
+    plazo_anos, 
+    fiu_perf_start, fiu_npa_start, 
+    new_debt_amount, new_debt_rate, new_debt_type,
+    rev_rate, cof_rate, provision_rate, rec_npa_rate, opex_pct, tax_rate,
+    cogs_amount, dep_amort_amount, fx_impact, non_op_result,
+    df_current_debt
+):
+    total_meses = int(plazo_anos * 12)
+    # Rango de fechas mensual
+    rng = pd.date_range(start=pd.Timestamp.now().normalize(), periods=total_meses, freq='ME')
     
-    df['saldo_prestamo'] = monto_deuda - df['amortizacion_prestamo'].cumsum()
-    df['saldo_prestamo'] = df['saldo_prestamo'].clip(lower=0)
+    # Tasas mensuales
+    r_rev = rev_rate / 100 / 12
+    r_cof = cof_rate / 100 / 12
+    r_prov = provision_rate / 100 / 12
+    r_rec = (1 - (1 - rec_npa_rate/100)**(1/12))
     
-    df_anual = df.resample('YE').sum() # 'YE' para pandas moderno, 'A' para antiguos
-    df_anual['Año'] = df_anual.index.year
-    df_anual['saldo_prestamo'] = df['saldo_prestamo'].resample('YE').last().round(2)
-    df_anual['fiu_performing_fin'] = df['fiu_performing_fin'].resample('YE').last()
-    df_anual['fiu_npa_fin'] = df['fiu_npa_inicio'].resample('YE').last() * (1-rec_npa_mensual)
+    # --- 1. PROCESAR DEUDA ACTUAL (TABLA EDITABLE) ---
+    total_int_actual = np.zeros(total_meses)
     
-    return df, df_anual
+    if not df_current_debt.empty:
+        for _, row in df_current_debt.iterrows():
+            try:
+                m = float(row.get('USD Balance Equiv', 0))
+                t = float(row.get('Weighted average annual rate', 0))
+                p = float(row.get('Plazo Restante (Años)', 3)) 
+                
+                # Calcular vector de intereses
+                ints = calculate_debt_schedule(m, t, p)
+                
+                # Sumar al vector total (recortando o rellenando)
+                len_fill = min(len(ints), total_meses)
+                total_int_actual[:len_fill] += ints[:len_fill]
+            except: continue
 
-def calculate_kpis(df_anual, monto_equity, plazo, df_saldo_prestamo_mensual):
-    utilidad_neta_total = df_anual['utilidad_neta'].sum()
-    roi = (utilidad_neta_total / monto_equity) * 100 if monto_equity > 0 else float('inf')
+    # --- 2. SIMULACIÓN MENSUAL ---
+    fiu_perf = fiu_perf_start
+    fiu_npa = fiu_npa_start
+    saldo_new_debt = new_debt_amount
+    r_new_debt = (new_debt_rate/100)/12
     
-    mes_pago_final = df_saldo_prestamo_mensual[df_saldo_prestamo_mensual < 0.01].first_valid_index()
-    if mes_pago_final:
-        start_date = df_saldo_prestamo_mensual.index[0]
-        meses_payback = (mes_pago_final.year - start_date.year) * 12 + (mes_pago_final.month - start_date.month) + 1
-        payback_text = f"{meses_payback / 12:.1f} Años"
+    cuota_new = 0
+    if new_debt_amount > 0 and new_debt_type == 'Amortizado':
+        cuota_new = npf.pmt(r_new_debt, total_meses, -new_debt_amount)
+
+    results = []
+    
+    for i in range(total_meses):
+        # Drivers Operativos
+        revenue = fiu_perf * r_rev
+        cof = fiu_perf * r_cof
+        prov = (fiu_perf + fiu_npa) * r_prov
+        cogs = cogs_amount / 12 
+        
+        gross_income = revenue - prov - cof - cogs
+        opex = revenue * (opex_pct / 100)
+        ebitda = gross_income - opex
+        
+        # Items bajo EBITDA
+        dep_amort = dep_amort_amount / 12
+        fx = fx_impact / 12
+        non_op = non_op_result / 12
+        
+        # Intereses (Actual + Nueva)
+        int_new = saldo_new_debt * r_new_debt
+        int_total = int_new + (total_int_actual[i] if i < len(total_int_actual) else 0)
+        
+        ebt = ebitda - dep_amort + fx + non_op - int_total
+        tax = max(0, ebt * (tax_rate/100))
+        net_income = ebt - tax
+        
+        # Movimiento de Capital (Deuda Nueva)
+        amort_new = 0
+        if new_debt_amount > 0:
+            if new_debt_type == 'Amortizado': amort_new = cuota_new - int_new
+            elif new_debt_type == 'Bullet' and i == total_meses - 1: amort_new = saldo_new_debt
+        
+        # Evolución FIU (Simplificada)
+        recup = fiu_npa * r_rec
+        fiu_npa -= recup
+        # Asumimos reinversión del flujo neto
+        cash_flow = net_income + dep_amort + recup - amort_new
+        fiu_perf += cash_flow
+        saldo_new_debt -= amort_new
+        
+        results.append({
+            'FIU Performing': fiu_perf,
+            'FIU NPA': fiu_npa,
+            'Revenues': revenue,
+            'Provisions': -prov,
+            'COF': -cof,
+            'COGS': -cogs,
+            'Gross Income': gross_income,
+            'OPEX': -opex,
+            'EBITDA': ebitda,
+            'Dep & Amort': -dep_amort,
+            'Exchange Rates': fx,
+            'Non Operating': non_op,
+            'Financial Expenses': -int_total,
+            'EBT': ebt,
+            'Taxes': -tax,
+            'Earnings': net_income
+        })
+
+    df_res = pd.DataFrame(results, index=rng)
+    
+    # Generar versión Anual
+    df_yr = df_res.resample('YE').sum()
+    # Corregir Saldos (no se suman, se toma el último)
+    df_yr['FIU Performing'] = df_res['FIU Performing'].resample('YE').last()
+    df_yr['FIU NPA'] = df_res['FIU NPA'].resample('YE').last()
+    
+    return df_res, df_yr
+
+def format_pnl_display(df_input, period_type='Anual'):
+    """
+    Transforma el DataFrame (mensual o anual) al formato P&L vertical solicitado.
+    """
+    # Formato de columnas (Fechas)
+    if period_type == 'Mensual':
+        columns = df_input.index.strftime('%b-%y')
+        df_iter = df_input.copy()
+        df_iter.index = columns
     else:
-        payback_text = f">{plazo} Años"
+        columns = df_input.index.year
+        df_iter = df_input.copy()
+        df_iter.index = columns
+
+    data_dict = {}
+
+    def calc_margin(num, den):
+        return (num / den * 100) if den != 0 else 0
+
+    # Construcción de filas
+    for col_name in df_iter.index:
+        row = df_iter.loc[col_name]
+        rev = row['Revenues']
         
-    return {
-        'roi': roi, 
-        'roi_text': f"{roi:.1f}%", 
-        'profit_text': f"${utilidad_neta_total:,.2f}",
-        'payback_text': payback_text
-    }
-
-def create_figures(df_anual, monto_deuda):
-    hover_template = "<b>%{y:,.2f} MUSD</b><extra></extra>"
-    text_template = "%{y:,.2f}"
-    
-    # 1. Cartera
-    fig_cartera = go.Figure(layout=dict(title="Evolución de Cartera (FIU a fin de año)", barmode='stack', yaxis_title="MUSD"))
-    fig_cartera.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['fiu_performing_fin'], name='FIU Performing', marker_color=PRIMARY))
-    fig_cartera.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['fiu_npa_fin'], name='FIU NPA', marker_color=ACCENT))
-    
-    # 2. P&L
-    fig_pnl = go.Figure(layout=dict(title="Evolución del P&L Anual", barmode='group', yaxis_title="MUSD"))
-    fig_pnl.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['ingresos'], name='Ingresos', marker_color=SECONDARY))
-    fig_pnl.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['ebitda'], name='EBITDA', marker_color=LIGHT_BLUE))
-    fig_pnl.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['utilidad_neta'], name='Utilidad Neta', marker_color=PRIMARY))
-
-    # 3. Flujo de Caja
-    fig_flujo = go.Figure(layout=dict(title="Fuentes y Usos de Caja Anual", barmode='relative', yaxis_title="MUSD"))
-    fig_flujo.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['ebitda'] - df_anual['impuestos'], name='Caja de Operación', marker_color=SECONDARY))
-    fig_flujo.add_trace(go.Bar(x=df_anual['Año'], y=-(df_anual['amortizacion_prestamo'] + df_anual['interes_prestamo']), name='Servicio de Deuda', marker_color=ACCENT))
-    fig_flujo.add_trace(go.Scatter(x=df_anual['Año'], y=df_anual['flujo_caja_equity'], name='Flujo Reinversión (FCFE)', mode='lines+markers', line=dict(color=PRIMARY, width=3)))
-
-    # 4. Deuda
-    fig_loan = go.Figure(layout=dict(title="Plan de Pagos de Deuda", barmode='stack'))
-    fig_loan.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['amortizacion_prestamo'], name='Amortización', marker_color=PRIMARY))
-    fig_loan.add_trace(go.Bar(x=df_anual['Año'], y=df_anual['interes_prestamo'], name='Intereses', marker_color=ACCENT))
-    fig_loan.add_trace(go.Scatter(x=df_anual['Año'], y=df_anual['saldo_prestamo'], name='Saldo Deuda', mode='lines+markers', line=dict(color=SECONDARY, width=3), yaxis="y2"))
-    fig_loan.update_layout(yaxis=dict(title='Pago Anual'), yaxis2=dict(title='Saldo', overlaying='y', side='right', showgrid=False, range=[0, max(1, monto_deuda * 1.1)]))
-
-    return {'cartera': fig_cartera, 'pnl': fig_pnl, 'flujo': fig_flujo, 'loan': fig_loan}
+        col_data = {
+            'FIU Performing': row['FIU Performing'],
+            'FIU NPA': row['FIU NPA'],
+            'Total FIU': row['FIU Performing'] + row['FIU NPA'],
+            ' ': np.nan, # Separador
+            'Revenues': rev,
+            'Provisions & Writes off': row['Provisions'],
+            'COF': row['COF'],
+            'COGS': row['COGS'],
+            'Gross Income': row['Gross Income'],
+            'OPEX': row['OPEX'],
+            'Op. Income / EBITDA': row['EBITDA'],
+            '  ': np.nan, # Separador
+            'Depreciation & Amortization': row['Dep & Amort'],
+            'Exchange rates': row['Exchange Rates'],
+            'Non operating rev/expenses': row['Non Operating'],
+            'Financial Expenses': row['Financial Expenses'],
+            'Earnings before tax (EBT)': row['EBT'],
+            'Taxes': row['Taxes'],
+            'Earnings (Net Income)': row['Earnings'],
+            '   ': np.nan, # Separador Inferior
+            'Gross Margin %': calc_margin(row['Gross Income'], rev),
+            'Operating Margin %': calc_margin(row['EBITDA'], rev),
+            'Net Margin %': calc_margin(row['Earnings'], rev)
+        }
+        data_dict[col_name] = col_data
+        
+    return pd.DataFrame(data_dict)

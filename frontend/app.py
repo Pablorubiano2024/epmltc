@@ -4,8 +4,9 @@ import os
 # ==============================================================================
 # 0. FIX DE IMPORTACIÓN (CRÍTICO)
 # ==============================================================================
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(current_dir)
+# Esto permite que Python encuentre la carpeta 'frontend' sin importar desde dónde se ejecute
+current_dir = os.path.dirname(os.path.abspath(__file__)) # carpeta frontend/
+root_dir = os.path.dirname(current_dir) # carpeta raiz epmltc/
 sys.path.append(root_dir)
 
 # ==============================================================================
@@ -15,66 +16,69 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 from PIL import Image
 
-# Imports de vistas
+# Importar estilos y componentes visuales
 from frontend.utils.enterprise_style import apply_enterprise_style, render_header
+
+# Importar las Vistas (Módulos)
 from frontend.views.dashboard import render_dashboard
+from frontend.views.explorer import render_explorer
 from frontend.views.classifier import render_classifier
 from frontend.views.projection import render_projection
-from frontend.views.explorer import render_explorer
+from frontend.views.data_manager import render_data_manager
 
 # ==============================================================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN INICIAL
 # ==============================================================================
 st.set_page_config(
     page_title="EPM Enterprise", 
     layout="wide", 
-    page_icon="assets/favicon.png" # Asegúrate de tener este icono también o bórralo
+    page_icon="🏢",
+    initial_sidebar_state="collapsed" # Ocultar sidebar nativo
 )
 
-# Aplicar estilos CSS globales
+# Aplicar CSS Corporativo
 apply_enterprise_style()
 
 # ==============================================================================
-# NAVBAR PERSONALIZADO (LOGO + MENÚ CENTRADO)
+# BARRA DE NAVEGACIÓN SUPERIOR (NAVBAR)
 # ==============================================================================
-# Contenedor superior con fondo blanco para simular la barra de navegación
 with st.container():
-    # Definimos 3 columnas: [Logo (pequeño) | Menú (Grande y centrado) | Espacio (pequeño)]
+    # Grid: [Logo (20%)] | [Menú (60%)] | [Espacio (20%)]
     col_logo, col_menu, col_spacer = st.columns([1.5, 6, 1.5], gap="small")
 
-    # --- 1. LOGO A LA IZQUIERDA ---
+    # --- 1. LOGO ---
     with col_logo:
-        # Ruta del logo relativa a la raíz del proyecto
         logo_path = os.path.join(root_dir, "assets", "logo_LTC.png")
-        
         if os.path.exists(logo_path):
-            # Usamos use_container_width para que se adapte a la columna
-            st.image(logo_path, width=180) 
+            st.image(logo_path, width=160)
         else:
-            # Fallback si no encuentra la imagen
             st.markdown("### 🏢 **LTC**")
-            st.caption("Logo no encontrado")
 
-    # --- 2. MENÚ EN EL CENTRO ---
+    # --- 2. MENÚ CENTRADO ---
     with col_menu:
         selected = option_menu(
-            menu_title=None, 
-            options=["Dashboard", "Explorador", "Clasificador IA", "Simulador"],
-            icons=["bar-chart-fill", "table", "robot", "graph-up-arrow"],
+            menu_title=None,
+            # Lista de Módulos (Incluyendo el Gestor de Datos)
+            options=["Dashboard", "Explorador", "Clasificador IA", "Simulador", "Gestor Datos"],
+            # Iconos de Bootstrap Icons (https://icons.getbootstrap.com/)
+            icons=["bar-chart-fill", "table", "robot", "graph-up-arrow", "database"],
             menu_icon="cast",
             default_index=0,
             orientation="horizontal",
             styles={
                 "container": {
                     "padding": "0!important", 
-                    "background-color": "transparent", # Transparente para fusionarse
+                    "background-color": "transparent", 
                     "margin": "0"
                 },
-                "icon": {"color": "#19AC86", "font-size": "14px"}, 
+                "icon": {
+                    "color": "#19AC86", 
+                    "font-size": "14px"
+                }, 
                 "nav-link": {
-                    "font-size": "15px", 
+                    "font-size": "14px", 
                     "text-align": "center", 
-                    "margin": "0px 10px", # Espacio entre botones
+                    "margin": "0px 5px", 
                     "--hover-color": "#f0f2f6"
                 },
                 "nav-link-selected": {
@@ -86,16 +90,17 @@ with st.container():
             }
         )
     
-    # --- 3. ESPACIO VACÍO A LA DERECHA (Para equilibrio) ---
+    # --- 3. ESPACIO DERECHO ---
     with col_spacer:
-        st.write("") # Puedes poner aquí un icono de usuario o botón de logout en el futuro
+        st.write("") # Espaciador vacío
 
-# Línea separadora sutil
-st.markdown("<div style='height: 2px; background-color: #f0f0f0; margin-bottom: 20px;'></div>", unsafe_allow_html=True)
+# Línea divisoria sutil
+st.markdown("<div style='height: 2px; background-color: #e0e0e0; margin-bottom: 25px;'></div>", unsafe_allow_html=True)
 
 # ==============================================================================
-# ENRUTADOR DE VISTAS
+# ENRUTADOR DE VISTAS (CONTROLADOR)
 # ==============================================================================
+
 if selected == "Dashboard":
     render_header("Dashboard Operativo")
     render_dashboard()
@@ -111,3 +116,7 @@ elif selected == "Clasificador IA":
 elif selected == "Simulador":
     render_header("Proyección Financiera")
     render_projection()
+
+elif selected == "Gestor Datos":
+    render_header("Administración de Parámetros")
+    render_data_manager()
